@@ -132,6 +132,25 @@ export function WiringTable({ plant, panels, pcsList, conditions, patchWiring }:
           </div>
         </div>
 
+        <label className="row" style={{ marginTop: 10, cursor: "pointer", gap: 8 }}>
+          <input
+            type="checkbox"
+            checked={w.allowMixedPanelSeries}
+            onChange={(e) => patchWiring({ allowMixedPanelSeries: e.target.checked })}
+          />
+          <span>
+            直列に異なるパネルの混在を許可する
+            <span className="hint" style={{ marginLeft: 6 }}>
+              （通常はOFF＝同一系統＝同一パネル。流用パネルと新パネルをどうしても同じ直列に組む場合のみON）
+            </span>
+          </span>
+        </label>
+        {w.allowMixedPanelSeries && (
+          <div className="warn-item" style={{ marginTop: 6 }}>
+            ⚠ 混在許可中：異種パネルを直列にすると電流の小さい側に律速されます。Imp/Vmpが近い組合せに限定してください。
+          </div>
+        )}
+
         {sizing && (
           <div className="hint" style={{ marginTop: 8 }}>
             推奨：直列 {sizing.seriesRange.min}–{sizing.seriesRange.max} 枚 ／ 並列 最大 {sizing.parallelMaxPerMppt} 本/MPPT

@@ -1,7 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { PanelSpec, LayoutProject, PanelArray } from "../types";
+import { cellKey } from "../types";
 import { fileToScaledDataUrl } from "../utils/image";
 import { uid } from "../store";
+
+const KEEP_COLOR = "#22c55e"; // 流用（変更しない）パネルの色
 
 interface Props {
   panels: PanelSpec[];
@@ -22,7 +25,7 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgReady, setImgReady] = useState(false);
   const [view, setView] = useState<View>({ tx: 40, ty: 40, zoom: 0.5 });
-  const [mode, setMode] = useState<"pan" | "calibrate">("pan");
+  const [mode, setMode] = useState<"pan" | "calibrate" | "select">("pan");
   const [calibPts, setCalibPts] = useState<{ x: number; y: number }[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
 
@@ -128,13 +131,15 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
       ctx.translate(arr.posXpx, arr.posYpx);
       ctx.rotate((arr.rotationDeg * Math.PI) / 180);
       const selected = arr.id === selectedId;
-      ctx.lineWidth = (selected ? 2 : 1) / view.zoom;
+      const keep = new Set(arr.keepCells ?? []);
       for (let r = 0; r < arr.rows; r++) {
         for (let col = 0; col < arr.cols; col++) {
           const x = col * (pw + gapPx);
           const y = r * (ph + gapPx);
-          ctx.fillStyle = arr.color + "55";
-          ctx.strokeStyle = selected ? "#fff" : arr.color;
+          const isKeep = keep.has(cellKey(r, col));
+          ctx.fillStyle = (isKeep ? KEEP_COLOR : arr.color) + (isKeep ? "66" : "44");
+          ctx.strokeStyle = isKeep ? KEEP_COLOR : selected ? "#fff" : arr.color;
+          ctx.lineWidth = (isKeep ? 1.5 : selected ? 2 : 1) / view.zoom;
           ctx.fillRect(x, y, pw, ph);
           ctx.strokeRect(x, y, pw, ph);
         }
@@ -211,11 +216,84 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     return null;
   }
 
+  /** 画像座標から (配列, 行, 列) を求める。なければ null。 */
+  function hitCell(ix: number, iy: number): { arr: PanelArray; r: number; col: number } | null {
+    for (let i = layout.arrays.length - 1; i >= 0; i--) {
+      const arr = layout.arrays[i];
+      const { pw, ph, gapPx } = arrayPanelPx(arr);
+      const dx = ix - arr.posXpx;
+      const dy = iy - arr.posYpx;
+      const a = (-arr.rotationDeg * Math.PI) / 180;
+      const lx = Math.cos(a) * dx - Math.sin(a) * dy;
+      const ly = Math.sin(a) * dx + Math.cos(a) * dy;
+      const col = Math.floor(lx / (pw + gapPx));
+      const r = Math.floor(ly / (ph + gapPx));
+      if (r >= 0 && r < arr.rows && col >= 0 && col < arr.cols) {
+        // セル内（隙間でない）か確認
+        const cx = lx - col * (pw + gapPx);
+        const cy = ly - r * (ph + gapPx);
+        if (cx <= pw && cy <= ph) return { arr, r, col };
+      }
+    }
+    return null;
+  }
+
+  function toggleCell(arr: PanelArray, r: number, col: number) {
+    const key = cellKey(r, col);
+    const keep = new Set(arr.keepCells ?? []);
+    if (keep.has(key)) keep.delete(key);
+    else keep.add(key);
+    patch({
+      arrays: layout.arrays.map((a) =>
+        a.id === arr.id ? { ...a, keepCells: [...keep] } : a
+      ),
+    });
+  }
+
+  function setAllCells(arrId: string, keepAll: boolean) {
+    patch({
+      arrays: layout.arrays.map((a) => {
+        if (a.id !== arrId) return a;
+        if (!keepAll) return { ...a, keepCells: [] };
+        const all: string[] = [];
+        for (let r = 0; r < a.rows; r++)
+          for (let c = 0; c < a.cols; c++) all.push(cellKey(r, c));
+        return { ...a, keepCells: all };
+      }),
+    });
+  }
+
+  function invertCells(arrId: string) {
+    patch({
+      arrays: layout.arrays.map((a) => {
+        if (a.id !== arrId) return a;
+        const keep = new Set(a.keepCells ?? []);
+        const next: string[] = [];
+        for (let r = 0; r < a.rows; r++)
+          for (let c = 0; c < a.cols; c++) {
+            const k = cellKey(r, c);
+            if (!keep.has(k)) next.push(k);
+          }
+        return { ...a, keepCells: next };
+      }),
+    });
+  }
+
   function onMouseDown(e: React.MouseEvent) {
     const c = canvasRef.current!;
     const rect = c.getBoundingClientRect();
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
+
+    if (mode === "select") {
+      const img = screenToImage(sx, sy);
+      const cell = hitCell(img.x, img.y);
+      if (cell) {
+        setSelectedId(cell.arr.id);
+        toggleCell(cell.arr, cell.r, cell.col);
+      }
+      return;
+    }
 
     if (mode === "calibrate") {
       const p = screenToImage(sx, sy);
@@ -358,6 +436,19 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
 
   const selected = layout.arrays.find((a) => a.id === selectedId) ?? null;
   const totalPanels = layout.arrays.reduce((s, a) => s + a.rows * a.cols, 0);
+  const keepTotal = layout.arrays.reduce((s, a) => s + (a.keepCells?.length ?? 0), 0);
+
+  function setAllPlant(keepAll: boolean) {
+    patch({
+      arrays: layout.arrays.map((a) => {
+        if (!keepAll) return { ...a, keepCells: [] };
+        const all: string[] = [];
+        for (let r = 0; r < a.rows; r++)
+          for (let c = 0; c < a.cols; c++) all.push(cellKey(r, c));
+        return { ...a, keepCells: all };
+      }),
+    });
+  }
 
   return (
     <>
@@ -378,7 +469,7 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
             {layout.calibration
               ? `スケール: ${pixelsPerMeter.toFixed(1)} px/m`
               : "未校正（基準寸法を設定してください）"}
-            ／ 合計 {totalPanels} 枚
+            ／ 合計 {totalPanels} 枚（流用 {keepTotal} / 入換 {totalPanels - keepTotal}）
           </span>
         </div>
 
@@ -437,6 +528,26 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
                 既知の長さ（パネル1枚の実寸や敷地の一辺）の両端をクリック→実長(m)を入力
               </span>
             </div>
+
+            <h3>流用パネルの指定（変更しないパネル）</h3>
+            <div className="row">
+              <button
+                className={`btn small ${mode === "select" ? "" : "secondary"}`}
+                onClick={() => setMode(mode === "select" ? "pan" : "select")}
+              >
+                {mode === "select" ? "選択中：パネルをクリックで切替" : "流用/入換を指定"}
+              </button>
+              <button className="btn secondary small" onClick={() => setAllPlant(true)}>
+                全部を流用
+              </button>
+              <button className="btn secondary small" onClick={() => setAllPlant(false)}>
+                全部を入換
+              </button>
+              <span className="hint">
+                <span style={{ color: KEEP_COLOR }}>■</span> 緑＝流用（変更しない）／ その他＝入換対象。
+                指定モードで個別パネルをクリックして切替。
+              </span>
+            </div>
           </>
         )}
       </div>
@@ -445,7 +556,7 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
           <canvas
             ref={canvasRef}
-            style={{ display: "block", width: "100%", cursor: mode === "calibrate" ? "crosshair" : "grab" }}
+            style={{ display: "block", width: "100%", cursor: mode === "calibrate" || mode === "select" ? "crosshair" : "grab" }}
             onMouseDown={onMouseDown}
             onMouseMove={onMouseMove}
             onMouseUp={onMouseUp}
@@ -523,7 +634,12 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
                         <div className="hint">{p?.model ?? "—"}</div>
                       </td>
                       <td className="num">{a.rows}×{a.cols}</td>
-                      <td className="num">{a.rows * a.cols}</td>
+                      <td className="num">
+                        {a.rows * a.cols}
+                        {(a.keepCells?.length ?? 0) > 0 && (
+                          <span className="hint"> (流用{a.keepCells!.length})</span>
+                        )}
+                      </td>
                       <td>{a.orientation === "portrait" ? "縦" : "横"}</td>
                       <td className="num">
                         <button className="btn danger small" onClick={(e) => { e.stopPropagation(); deleteArray(a.id); }}>削除</button>
@@ -558,6 +674,13 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
                     <option value="landscape">横置き</option>
                   </select>
                 </div>
+              </div>
+              <div className="row" style={{ marginTop: 8 }}>
+                <span className="hint">この配列の流用指定：</span>
+                <button className="btn secondary small" onClick={() => setAllCells(selected.id, true)}>全部流用</button>
+                <button className="btn secondary small" onClick={() => setAllCells(selected.id, false)}>全部入換</button>
+                <button className="btn secondary small" onClick={() => invertCells(selected.id)}>反転</button>
+                <span className="hint">流用 {selected.keepCells?.length ?? 0} 枚</span>
               </div>
             </div>
           )}

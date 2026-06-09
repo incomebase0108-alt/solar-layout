@@ -135,6 +135,16 @@ export interface PanelArray {
   rotationDeg: number;
   /** 表示色 */
   color: string;
+  /**
+   * 「流用（変更しない）」パネルのセルキー一覧。"行,列"（0始まり）。
+   * 既定は空＝全セル入換対象。ここに入ったセルは既設流用。
+   */
+  keepCells?: string[];
+}
+
+/** セルキー生成 */
+export function cellKey(r: number, c: number): string {
+  return `${r},${c}`;
 }
 
 /**
@@ -182,6 +192,12 @@ export interface WiringPlan {
   parallelPerMppt: number;
   /** 設計対象の総パネル枚数（未指定なら図面の合計を使う） */
   totalPanelsOverride: number | null;
+  /**
+   * 直列(1系統)に異なるパネルの混在を許可するか。
+   * 既定 false ＝「同一系統＝同一パネル」。
+   * true のときのみ、流用パネルと新パネルを同一ストリングで組合せ可。
+   */
+  allowMixedPanelSeries: boolean;
 }
 
 export interface PowerPlant {
@@ -205,4 +221,5 @@ export const EMPTY_WIRING: WiringPlan = {
   seriesPerString: 0,
   parallelPerMppt: 0,
   totalPanelsOverride: null,
+  allowMixedPanelSeries: false,
 };

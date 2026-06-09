@@ -5,13 +5,15 @@ import { StringCalculator } from "./components/StringCalculator";
 import { LayoutEditor } from "./components/LayoutEditor";
 import { PlantManager } from "./components/PlantManager";
 import { WiringTable } from "./components/WiringTable";
+import { Optimizer } from "./components/Optimizer";
 import { usePanels, usePcsList, useConditions, usePlants } from "./store";
 
-type Tab = "plant" | "layout" | "wiring" | "panel" | "pcs" | "string";
+type Tab = "plant" | "layout" | "optimize" | "wiring" | "panel" | "pcs" | "string";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "plant", label: "発電所" },
   { key: "layout", label: "現況レイアウト" },
+  { key: "optimize", label: "入換最適化" },
   { key: "wiring", label: "パワコン配線表" },
   { key: "panel", label: "パネル登録" },
   { key: "pcs", label: "パワコン登録" },
@@ -73,6 +75,9 @@ export default function App() {
           layout={current.layout}
           patch={plantStore.patchLayout}
         />
+      )}
+      {tab === "optimize" && current && (
+        <Optimizer plant={current} panels={panelStore.panels} />
       )}
       {tab === "wiring" && current && (
         <WiringTable
