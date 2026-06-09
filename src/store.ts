@@ -1,6 +1,11 @@
 import { useCallback, useEffect, useState } from "react";
-import type { PanelSpec, PcsSpec, DesignConditions } from "./types";
-import { DEFAULT_CONDITIONS } from "./types";
+import type {
+  PanelSpec,
+  PcsSpec,
+  DesignConditions,
+  LayoutProject,
+} from "./types";
+import { DEFAULT_CONDITIONS, EMPTY_LAYOUT } from "./types";
 
 // ============================================================
 // LocalStorage ベースの簡易永続化ストア
@@ -12,6 +17,7 @@ const KEYS = {
   panels: "solar-layout.panels",
   pcs: "solar-layout.pcs",
   conditions: "solar-layout.conditions",
+  layout: "solar-layout.layout",
 } as const;
 
 function load<T>(key: string, fallback: T): T {
@@ -128,4 +134,16 @@ export function useConditions() {
   );
   useEffect(() => save(KEYS.conditions, conditions), [conditions]);
   return { conditions, setConditions };
+}
+
+export function useLayout() {
+  const [layout, setLayout] = useState<LayoutProject>(() =>
+    load(KEYS.layout, EMPTY_LAYOUT)
+  );
+  useEffect(() => save(KEYS.layout, layout), [layout]);
+  const patch = useCallback(
+    (p: Partial<LayoutProject>) => setLayout((prev) => ({ ...prev, ...p })),
+    []
+  );
+  return { layout, setLayout, patch };
 }

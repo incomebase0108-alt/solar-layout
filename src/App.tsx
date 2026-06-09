@@ -2,21 +2,24 @@ import { useState } from "react";
 import { PanelRegistry } from "./components/PanelRegistry";
 import { PcsRegistry } from "./components/PcsRegistry";
 import { StringCalculator } from "./components/StringCalculator";
-import { usePanels, usePcsList, useConditions } from "./store";
+import { LayoutEditor } from "./components/LayoutEditor";
+import { usePanels, usePcsList, useConditions, useLayout } from "./store";
 
-type Tab = "panel" | "pcs" | "string";
+type Tab = "layout" | "panel" | "pcs" | "string";
 
 const TABS: { key: Tab; label: string }[] = [
+  { key: "layout", label: "現況レイアウト" },
   { key: "panel", label: "パネル登録" },
   { key: "pcs", label: "パワコン登録" },
   { key: "string", label: "ストリング計算" },
 ];
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("panel");
+  const [tab, setTab] = useState<Tab>("layout");
   const panelStore = usePanels();
   const pcsStore = usePcsList();
   const condStore = useConditions();
+  const layoutStore = useLayout();
 
   return (
     <div className="app">
@@ -37,6 +40,13 @@ export default function App() {
         ))}
       </nav>
 
+      {tab === "layout" && (
+        <LayoutEditor
+          panels={panelStore.panels}
+          layout={layoutStore.layout}
+          patch={layoutStore.patch}
+        />
+      )}
       {tab === "panel" && <PanelRegistry store={panelStore} />}
       {tab === "pcs" && <PcsRegistry store={pcsStore} />}
       {tab === "string" && (

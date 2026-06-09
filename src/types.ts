@@ -96,3 +96,67 @@ export const DEFAULT_CONDITIONS: DesignConditions = {
   minAmbientTempC: -10,
   maxCellTempC: 70,
 };
+
+// ============================================================
+// 現況レイアウト（航空写真トレース）用モデル
+// ============================================================
+
+/**
+ * スケール校正：画像ピクセル上の 2 点と、その実長(m)。
+ * これから「1m あたり何ピクセルか」を求める。
+ */
+export interface Calibration {
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
+  /** 上記 2 点間の実際の距離 (m) */
+  meters: number;
+}
+
+/**
+ * パネル配列（架台 1 ブロック）。
+ * 画像ピクセル座標系で位置を持ち、行×列でグリッド配置する。
+ */
+export interface PanelArray {
+  id: string;
+  /** 参照するパネルマスタ id（寸法取得用） */
+  panelId: string;
+  /** 縦置き / 横置き */
+  orientation: "portrait" | "landscape";
+  rows: number;
+  cols: number;
+  /** パネル間の隙間 (m) */
+  gapM: number;
+  /** 配列左上の画像ピクセル座標 */
+  posXpx: number;
+  posYpx: number;
+  /** 画像に対する配列の回転 (度) */
+  rotationDeg: number;
+  /** 表示色 */
+  color: string;
+}
+
+/**
+ * 現況レイアウトのプロジェクト（写真＋校正＋配列）。
+ */
+export interface LayoutProject {
+  /** 背景航空写真（データURL, アップロード時に縮小） */
+  imageDataUrl: string | null;
+  /** 写真の向き補正（度）— ご要望の「向きを変える」機能 */
+  imageRotationDeg: number;
+  /** 背景の透過度 0–1 */
+  imageOpacity: number;
+  /** スケール校正 */
+  calibration: Calibration | null;
+  /** 配置済みパネル配列 */
+  arrays: PanelArray[];
+}
+
+export const EMPTY_LAYOUT: LayoutProject = {
+  imageDataUrl: null,
+  imageRotationDeg: 0,
+  imageOpacity: 1,
+  calibration: null,
+  arrays: [],
+};
