@@ -1,0 +1,52 @@
+import { useState } from "react";
+import { PanelRegistry } from "./components/PanelRegistry";
+import { PcsRegistry } from "./components/PcsRegistry";
+import { StringCalculator } from "./components/StringCalculator";
+import { usePanels, usePcsList, useConditions } from "./store";
+
+type Tab = "panel" | "pcs" | "string";
+
+const TABS: { key: Tab; label: string }[] = [
+  { key: "panel", label: "パネル登録" },
+  { key: "pcs", label: "パワコン登録" },
+  { key: "string", label: "ストリング計算" },
+];
+
+export default function App() {
+  const [tab, setTab] = useState<Tab>("panel");
+  const panelStore = usePanels();
+  const pcsStore = usePcsList();
+  const condStore = useConditions();
+
+  return (
+    <div className="app">
+      <header className="app-header">
+        <h1>☀ ソーラーレイアウト設計支援</h1>
+        <span className="sub">マスタ登録 ＆ ストリング設計（直列/並列）</span>
+      </header>
+
+      <nav className="tabs">
+        {TABS.map((t) => (
+          <button
+            key={t.key}
+            className={tab === t.key ? "active" : ""}
+            onClick={() => setTab(t.key)}
+          >
+            {t.label}
+          </button>
+        ))}
+      </nav>
+
+      {tab === "panel" && <PanelRegistry store={panelStore} />}
+      {tab === "pcs" && <PcsRegistry store={pcsStore} />}
+      {tab === "string" && (
+        <StringCalculator
+          panels={panelStore.panels}
+          pcsList={pcsStore.pcsList}
+          conditions={condStore.conditions}
+          setConditions={condStore.setConditions}
+        />
+      )}
+    </div>
+  );
+}
