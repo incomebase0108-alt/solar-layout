@@ -1,0 +1,136 @@
+import { useState } from "react";
+import type { PowerPlant } from "../types";
+
+interface Props {
+  plants: PowerPlant[];
+  currentId: string;
+  setCurrentId: (id: string) => void;
+  addPlant: (name: string) => string;
+  updatePlant: (
+    id: string,
+    patch: Partial<Omit<PowerPlant, "id" | "layout" | "wiring">>
+  ) => void;
+  deletePlant: (id: string) => void;
+}
+
+function panelCount(p: PowerPlant): number {
+  return p.layout.arrays.reduce((s, a) => s + a.rows * a.cols, 0);
+}
+
+export function PlantManager({
+  plants,
+  currentId,
+  setCurrentId,
+  addPlant,
+  updatePlant,
+  deletePlant,
+}: Props) {
+  const [newName, setNewName] = useState("");
+  const current = plants.find((p) => p.id === currentId);
+
+  return (
+    <>
+      <div className="card">
+        <h2>発電所の登録</h2>
+        <div className="row">
+          <div className="field" style={{ flex: 1, minWidth: 220 }}>
+            <label>新しい発電所名</label>
+            <input
+              value={newName}
+              placeholder="例：吉良町 荻原小川尻"
+              onChange={(e) => setNewName(e.target.value)}
+            />
+          </div>
+          <div className="field" style={{ justifyContent: "flex-end" }}>
+            <button
+              className="btn"
+              onClick={() => {
+                addPlant(newName.trim() || "新規発電所");
+                setNewName("");
+              }}
+            >
+              発電所を追加
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="card">
+        <h2>発電所一覧（{plants.length}）</h2>
+        <table className="list">
+          <thead>
+            <tr>
+              <th>発電所名 / 所在地</th>
+              <th className="num">図面枚数</th>
+              <th className="num">校正</th>
+              <th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {plants.map((p) => (
+              <tr
+                key={p.id}
+                style={{ outline: p.id === currentId ? "1px solid var(--accent)" : undefined }}
+              >
+                <td>
+                  <strong>{p.name}</strong>
+                  {p.id === currentId && (
+                    <span className="badge new" style={{ marginLeft: 8 }}>選択中</span>
+                  )}
+                  <div className="hint">{p.address || "所在地未設定"}</div>
+                </td>
+                <td className="num">{panelCount(p)} 枚</td>
+                <td className="num">{p.layout.calibration ? "済" : "—"}</td>
+                <td className="num">
+                  <div className="row" style={{ justifyContent: "flex-end" }}>
+                    {p.id !== currentId && (
+                      <button className="btn small" onClick={() => setCurrentId(p.id)}>選択</button>
+                    )}
+                    <button
+                      className="btn danger small"
+                      onClick={() =>
+                        confirm(`発電所「${p.name}」を削除しますか？図面も削除されます。`) &&
+                        deletePlant(p.id)
+                      }
+                    >
+                      削除
+                    </button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {current && (
+        <div className="card">
+          <h2>選択中の発電所の情報</h2>
+          <div className="form-grid">
+            <div className="field">
+              <label>発電所名</label>
+              <input
+                value={current.name}
+                onChange={(e) => updatePlant(current.id, { name: e.target.value })}
+              />
+            </div>
+            <div className="field">
+              <label>所在地</label>
+              <input
+                value={current.address ?? ""}
+                onChange={(e) => updatePlant(current.id, { address: e.target.value })}
+              />
+            </div>
+            <div className="field" style={{ gridColumn: "1 / -1" }}>
+              <label>備考（連系容量・系統など）</label>
+              <input
+                value={current.note ?? ""}
+                onChange={(e) => updatePlant(current.id, { note: e.target.value })}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}

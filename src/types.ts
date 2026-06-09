@@ -160,3 +160,49 @@ export const EMPTY_LAYOUT: LayoutProject = {
   calibration: null,
   arrays: [],
 };
+
+// ============================================================
+// 発電所（サイト）モデル
+//   発電所ごとに 図面（現況レイアウト）と 配線設定 を持つ。
+//   パネル/パワコンは共通マスタを参照する。
+// ============================================================
+
+/**
+ * 配線設定：この発電所で採用するパワコンと、ストリング構成。
+ * 「同一系統＝同一パネル」「パワコン仕様に合わせた直列/並列」を表す。
+ */
+export interface WiringPlan {
+  /** 採用するパワコンマスタ id（既設/新設はマスタ側の kind で区別） */
+  pcsId: string | null;
+  /** 採用するパネルマスタ id（系統共通のパネル） */
+  panelId: string | null;
+  /** 1 ストリングあたりの直列数 */
+  seriesPerString: number;
+  /** 1 MPPT あたりの並列（ストリング）数 */
+  parallelPerMppt: number;
+  /** 設計対象の総パネル枚数（未指定なら図面の合計を使う） */
+  totalPanelsOverride: number | null;
+}
+
+export interface PowerPlant {
+  id: string;
+  /** 発電所名 */
+  name: string;
+  /** 所在地 */
+  address?: string;
+  /** 連系容量などの備考 */
+  note?: string;
+  createdAt: number;
+  /** 図面（現況レイアウト） */
+  layout: LayoutProject;
+  /** 配線設定 */
+  wiring: WiringPlan;
+}
+
+export const EMPTY_WIRING: WiringPlan = {
+  pcsId: null,
+  panelId: null,
+  seriesPerString: 0,
+  parallelPerMppt: 0,
+  totalPanelsOverride: null,
+};

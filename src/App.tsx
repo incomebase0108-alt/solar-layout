@@ -3,29 +3,46 @@ import { PanelRegistry } from "./components/PanelRegistry";
 import { PcsRegistry } from "./components/PcsRegistry";
 import { StringCalculator } from "./components/StringCalculator";
 import { LayoutEditor } from "./components/LayoutEditor";
-import { usePanels, usePcsList, useConditions, useLayout } from "./store";
+import { PlantManager } from "./components/PlantManager";
+import { WiringTable } from "./components/WiringTable";
+import { usePanels, usePcsList, useConditions, usePlants } from "./store";
 
-type Tab = "layout" | "panel" | "pcs" | "string";
+type Tab = "plant" | "layout" | "wiring" | "panel" | "pcs" | "string";
 
 const TABS: { key: Tab; label: string }[] = [
+  { key: "plant", label: "発電所" },
   { key: "layout", label: "現況レイアウト" },
+  { key: "wiring", label: "パワコン配線表" },
   { key: "panel", label: "パネル登録" },
   { key: "pcs", label: "パワコン登録" },
   { key: "string", label: "ストリング計算" },
 ];
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("layout");
+  const [tab, setTab] = useState<Tab>("plant");
   const panelStore = usePanels();
   const pcsStore = usePcsList();
   const condStore = useConditions();
-  const layoutStore = useLayout();
+  const plantStore = usePlants();
+  const current = plantStore.current;
 
   return (
     <div className="app">
       <header className="app-header">
         <h1>☀ ソーラーレイアウト設計支援</h1>
-        <span className="sub">マスタ登録 ＆ ストリング設計（直列/並列）</span>
+        <span className="sub">発電所別 図面 ＆ パワコン配線</span>
+        <span className="spacer" />
+        <div className="field" style={{ minWidth: 220 }}>
+          <label>対象の発電所</label>
+          <select
+            value={plantStore.currentId}
+            onChange={(e) => plantStore.setCurrentId(e.target.value)}
+          >
+            {plantStore.plants.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+        </div>
       </header>
 
       <nav className="tabs">
@@ -40,11 +57,30 @@ export default function App() {
         ))}
       </nav>
 
-      {tab === "layout" && (
+      {tab === "plant" && (
+        <PlantManager
+          plants={plantStore.plants}
+          currentId={plantStore.currentId}
+          setCurrentId={plantStore.setCurrentId}
+          addPlant={plantStore.addPlant}
+          updatePlant={plantStore.updatePlant}
+          deletePlant={plantStore.deletePlant}
+        />
+      )}
+      {tab === "layout" && current && (
         <LayoutEditor
           panels={panelStore.panels}
-          layout={layoutStore.layout}
-          patch={layoutStore.patch}
+          layout={current.layout}
+          patch={plantStore.patchLayout}
+        />
+      )}
+      {tab === "wiring" && current && (
+        <WiringTable
+          plant={current}
+          panels={panelStore.panels}
+          pcsList={pcsStore.pcsList}
+          conditions={condStore.conditions}
+          patchWiring={plantStore.patchWiring}
         />
       )}
       {tab === "panel" && <PanelRegistry store={panelStore} />}
