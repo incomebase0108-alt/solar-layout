@@ -204,6 +204,16 @@ export interface WiringPlan {
    * true のときのみ、流用パネルと新パネルを同一ストリングで組合せ可。
    */
   allowMixedPanelSeries: boolean;
+  /**
+   * 影ゾーンに入るパワコンの台数。
+   * この台数分のパワコンは負荷率を下げて配分する（過積載率を下げる）。
+   */
+  shadedPcsCount: number;
+  /**
+   * 影ゾーンのパワコンの目標負荷率 (0–1)。
+   * 1台あたり最大ストリング数に対する割合。小さいほど過積載率が下がる。
+   */
+  shadeFactor: number;
 }
 
 export interface PowerPlant {
@@ -239,6 +249,8 @@ export const EMPTY_WIRING: WiringPlan = {
   parallelPerMppt: 0,
   totalPanelsOverride: null,
   allowMixedPanelSeries: false,
+  shadedPcsCount: 0,
+  shadeFactor: 0.7,
 };
 
 // ============================================================

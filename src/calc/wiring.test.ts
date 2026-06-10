@@ -42,4 +42,40 @@ describe("配線生成", () => {
     const r = generateWiring(panel, pcs, 14, 5, 196);
     expect(r.warnings.join()).toMatch(/最大/);
   });
+
+  it("ストリングを各パワコンへ均等配分する", () => {
+    // 13ストリング, maxPerPcs=2 → 7台。差は最大1系統に収まる
+    const r = generateWiring(panel, pcs, 14, 1, 13 * 14);
+    const counts = r.perPcs.map((p) => p.totalStrings);
+    expect(Math.max(...counts) - Math.min(...counts)).toBeLessThanOrEqual(1);
+  });
+
+  it("過積載率の平均・範囲を算出する", () => {
+    const r = generateWiring(panel, pcs, 14, 1, 196);
+    expect(r.avgOverloadPct).toBeGreaterThan(0);
+    expect(r.minOverloadPct).toBeLessThanOrEqual(r.maxOverloadPct);
+    expect(r.avgOverloadPct).toBeGreaterThanOrEqual(r.minOverloadPct - 1e-9);
+    expect(r.avgOverloadPct).toBeLessThanOrEqual(r.maxOverloadPct + 1e-9);
+  });
+});
+
+describe("影ゾーン", () => {
+  // MPPTあたり最大2並列にして余裕を持たせる
+  const pcs2 = { ...pcs, stringsPerMppt: 2 };
+
+  it("影ゾーンのパワコンは過積載率が通常台より低い", () => {
+    // 並列2/MPPT, 2MPPT → maxPerPcs=4。影1台を負荷率50%に
+    const r = generateWiring(panel, pcs2, 10, 2, 30 * 10, 1, 0.5);
+    const shaded = r.perPcs.filter((p) => p.isShaded);
+    const normal = r.perPcs.filter((p) => !p.isShaded);
+    expect(shaded.length).toBe(1);
+    const maxShaded = Math.max(...shaded.map((p) => p.overloadPct));
+    const maxNormal = Math.max(...normal.map((p) => p.overloadPct));
+    expect(maxShaded).toBeLessThan(maxNormal);
+  });
+
+  it("影ゾーン0台なら全台通常", () => {
+    const r = generateWiring(panel, pcs2, 10, 2, 30 * 10, 0, 0.7);
+    expect(r.perPcs.every((p) => !p.isShaded)).toBe(true);
+  });
 });

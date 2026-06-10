@@ -40,9 +40,11 @@ export function WiringTable({ plant, panels, pcsList, conditions, patchWiring }:
       pcs,
       w.seriesPerString,
       w.parallelPerMppt,
-      totalPanels
+      totalPanels,
+      w.shadedPcsCount,
+      w.shadeFactor
     );
-  }, [panel, pcs, w.seriesPerString, w.parallelPerMppt, totalPanels]);
+  }, [panel, pcs, w.seriesPerString, w.parallelPerMppt, totalPanels, w.shadedPcsCount, w.shadeFactor]);
 
   function applyRecommended() {
     if (!sizing) return;
@@ -157,6 +159,33 @@ export function WiringTable({ plant, panels, pcsList, conditions, patchWiring }:
           </div>
         )}
 
+        <h3>影ゾーン（過積載率の調整）</h3>
+        <div className="form-grid">
+          <div className="field">
+            <label>影ゾーンのパワコン台数</label>
+            <input
+              type="number"
+              min={0}
+              value={w.shadedPcsCount}
+              onChange={(e) => patchWiring({ shadedPcsCount: Math.max(0, Number(e.target.value)) })}
+            />
+          </div>
+          <div className="field" style={{ flex: 1, minWidth: 200 }}>
+            <label>影ゾーンの目標負荷率: {(w.shadeFactor * 100) | 0}%</label>
+            <input
+              type="range"
+              min={0.3}
+              max={1}
+              step={0.05}
+              value={w.shadeFactor}
+              onChange={(e) => patchWiring({ shadeFactor: Number(e.target.value) })}
+            />
+          </div>
+        </div>
+        <div className="hint">
+          影になる場所のパワコンを指定すると、その台のストリングを減らして過積載率を下げます（余りは他の台が負担）。0台＝全台を均等配分。
+        </div>
+
         {sizing && (
           <div className="hint" style={{ marginTop: 8 }}>
             推奨：直列 {sizing.seriesRange.min}–{sizing.seriesRange.max} 枚 ／ 並列 最大 {sizing.parallelMaxPerMppt} 本/MPPT
@@ -199,6 +228,16 @@ export function WiringTable({ plant, panels, pcsList, conditions, patchWiring }:
                   <small> kW{plant.outputCapKw ? ` / 上限 ${plant.outputCapKw}` : ""}</small>
                 </div>
               </div>
+              <div className="metric">
+                <div className="label">過積載率（平均）</div>
+                <div className="value">
+                  {wiring.avgOverloadPct.toFixed(0)}
+                  <small> %</small>
+                </div>
+                <div className="hint">
+                  範囲 {wiring.minOverloadPct.toFixed(0)}–{wiring.maxOverloadPct.toFixed(0)}%／目安110–130%
+                </div>
+              </div>
             </div>
             {overCap && (
               <div className="warn-item" style={{ marginTop: 6 }}>
@@ -208,6 +247,43 @@ export function WiringTable({ plant, panels, pcsList, conditions, patchWiring }:
             {wiring.warnings.map((wr, i) => (
               <div className="warn-item" key={i} style={{ marginTop: 6 }}>⚠ {wr}</div>
             ))}
+          </div>
+
+          <div className="card">
+            <h2>パワコン別 過積載率</h2>
+            <table className="list">
+              <thead>
+                <tr>
+                  <th>パワコン</th>
+                  <th>区分</th>
+                  <th className="num">系統数</th>
+                  <th className="num">枚数</th>
+                  <th className="num">DC容量</th>
+                  <th className="num">過積載率</th>
+                </tr>
+              </thead>
+              <tbody>
+                {wiring.perPcs.map((u) => (
+                  <tr key={u.pcsIndex}>
+                    <td><strong>{pcs.model} #{u.pcsIndex}</strong></td>
+                    <td>
+                      {u.isShaded
+                        ? <span className="badge existing">影ゾーン</span>
+                        : <span className="badge new">通常</span>}
+                    </td>
+                    <td className="num">{u.totalStrings}</td>
+                    <td className="num">{u.totalPanels}</td>
+                    <td className="num">{u.dcKw.toFixed(2)} kW</td>
+                    <td className="num" style={{ color: u.overloadPct > 130 ? "var(--warn)" : undefined }}>
+                      {u.overloadPct.toFixed(0)} %
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="hint" style={{ marginTop: 8 }}>
+              平均 {wiring.avgOverloadPct.toFixed(0)}%。影ゾーン台は負荷を下げて過積載率を抑えています。
+            </div>
           </div>
 
           <div className="card">
