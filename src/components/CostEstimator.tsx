@@ -1,6 +1,6 @@
 import { useMemo, useState } from "react";
 import type { PanelSpec, PcsSpec, PowerPlant, CostRates } from "../types";
-import { estimateCost } from "../calc/cost";
+import { estimateCost, estimateAfterGeneration, estimateRoi } from "../calc/cost";
 
 interface Props {
   plant: PowerPlant;
@@ -8,16 +8,33 @@ interface Props {
   pcsList: PcsSpec[];
   costRates: CostRates;
   setCostRates: (r: CostRates) => void;
+  updatePlant: (
+    id: string,
+    patch: Partial<Omit<PowerPlant, "id" | "layout" | "wiring">>
+  ) => void;
 }
 
 const yen = (n: number) => "¥" + Math.round(n).toLocaleString("ja-JP");
 
-export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates }: Props) {
+export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates, updatePlant }: Props) {
   // 図面の入換対象枚数（流用を除く）
   const replaceCount = plant.layout.arrays.reduce(
     (s, a) => s + a.rows * a.cols - (a.keepCells?.length ?? 0),
     0
   );
+
+  // 現状容量・流用分容量（既設パネル基準）
+  const { beforeKw, keptKw } = useMemo(() => {
+    let before = 0;
+    let kept = 0;
+    for (const a of plant.layout.arrays) {
+      const p = panels.find((x) => x.id === a.panelId);
+      const pmax = p?.pmaxW ?? 0;
+      before += (a.rows * a.cols * pmax) / 1000;
+      kept += ((a.keepCells?.length ?? 0) * pmax) / 1000;
+    }
+    return { beforeKw: before, keptKw: kept };
+  }, [plant.layout.arrays, panels]);
 
   const [panelId, setPanelId] = useState(
     plant.wiring.panelId ?? panels[0]?.id ?? ""
@@ -31,6 +48,9 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates 
   const [newPcsCount, setNewPcsCount] = useState(0);
   const [removedPcsCount, setRemovedPcsCount] = useState(0);
   const [pcsUnitYen, setPcsUnitYen] = useState<number | "">("");
+
+  // 費用対効果：変更後の年間発電量（空欄なら容量比で自動推定）
+  const [afterGenOverride, setAfterGenOverride] = useState<number | "">("");
 
   const panel = panels.find((p) => p.id === panelId) ?? null;
   const pcs = pcsList.find((p) => p.id === pcsId) ?? null;
@@ -56,6 +76,29 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates 
 
   const setRate = (k: keyof CostRates) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setCostRates({ ...costRates, [k]: Number(e.target.value) });
+
+  // --- 費用対効果 ---
+  const afterKw = (newPanels * (panel?.pmaxW ?? 0)) / 1000 + keptKw;
+  const currentAnnualKwh = plant.annualGenerationKwh ?? 0;
+  const estAfterKwh = estimateAfterGeneration(currentAnnualKwh, beforeKw, afterKw);
+  const afterAnnualKwh = afterGenOverride === "" ? estAfterKwh : afterGenOverride;
+  const fitPrice = plant.fitPriceYenPerKwh ?? 0;
+  const remainingYears = plant.fitRemainingYears ?? 0;
+
+  const roi = useMemo(
+    () =>
+      estimateRoi({
+        currentAnnualKwh,
+        afterAnnualKwh,
+        fitPriceYenPerKwh: fitPrice,
+        remainingYears,
+        upgradeCostYen: result.totalYen,
+      }),
+    [currentAnnualKwh, afterAnnualKwh, fitPrice, remainingYears, result.totalYen]
+  );
+  const setPlantNum = (k: "fitPriceYenPerKwh" | "fitRemainingYears" | "annualGenerationKwh") =>
+    (e: React.ChangeEvent<HTMLInputElement>) =>
+      updatePlant(plant.id, { [k]: e.target.value === "" ? null : Number(e.target.value) });
 
   return (
     <>
@@ -216,6 +259,84 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates 
             （新設 {((newPanels * (panel?.pmaxW ?? 0)) / 1000).toFixed(1)} kW）
           </div>
         )}
+      </div>
+
+      <div className="card">
+        <h2>費用対効果（FIT）</h2>
+        <div className="form-grid">
+          <div className="field">
+            <label>FIT単価 (円/kWh)</label>
+            <input type="number" step="0.1" value={plant.fitPriceYenPerKwh ?? ""} onChange={setPlantNum("fitPriceYenPerKwh")} />
+          </div>
+          <div className="field">
+            <label>FIT残存年数 (年)</label>
+            <input type="number" step="0.5" value={plant.fitRemainingYears ?? ""} onChange={setPlantNum("fitRemainingYears")} />
+          </div>
+          <div className="field">
+            <label>現在の年間発電量 (kWh/年)</label>
+            <input type="number" value={plant.annualGenerationKwh ?? ""} onChange={setPlantNum("annualGenerationKwh")} />
+          </div>
+          <div className="field">
+            <label>変更後の年間発電量 (kWh/年)</label>
+            <input
+              type="number"
+              placeholder={`自動推定: ${Math.round(estAfterKwh).toLocaleString()}`}
+              value={afterGenOverride}
+              onChange={(e) => setAfterGenOverride(e.target.value === "" ? "" : Number(e.target.value))}
+            />
+            <div className="hint">空欄なら容量比（{beforeKw.toFixed(1)}→{afterKw.toFixed(1)}kW）で自動推定</div>
+          </div>
+        </div>
+
+        <div className="result-grid" style={{ marginTop: 12 }}>
+          <div className="metric">
+            <div className="label">年間発電量の増分</div>
+            <div className="value">
+              {roi.deltaAnnualKwh >= 0 ? "+" : ""}{Math.round(roi.deltaAnnualKwh).toLocaleString()}
+              <small> kWh/年</small>
+            </div>
+          </div>
+          <div className="metric">
+            <div className="label">年間 増収</div>
+            <div className="value">{yen(roi.annualRevenueIncreaseYen)}<small>/年</small></div>
+          </div>
+          <div className="metric">
+            <div className="label">残存{remainingYears || "—"}年の累計増収</div>
+            <div className="value">{yen(roi.totalRevenueIncreaseYen)}</div>
+          </div>
+          <div className="metric">
+            <div className="label">改修費用</div>
+            <div className="value">{yen(result.totalYen)}</div>
+          </div>
+          <div className="metric">
+            <div className="label">正味便益（増収−費用）</div>
+            <div className="value" style={{ color: roi.netBenefitYen >= 0 ? "var(--accent-2)" : "var(--danger)" }}>
+              {yen(roi.netBenefitYen)}
+            </div>
+          </div>
+          <div className="metric">
+            <div className="label">投資回収年数</div>
+            <div className="value">
+              {roi.paybackYears != null ? roi.paybackYears.toFixed(1) : "—"}
+              <small> 年</small>
+            </div>
+            {roi.paybackYears != null && remainingYears > 0 && (
+              <div className="hint" style={{ color: roi.paybackYears <= remainingYears ? "var(--accent-2)" : "var(--danger)" }}>
+                {roi.paybackYears <= remainingYears ? "残存年数内に回収" : "残存年数内に回収できない"}
+              </div>
+            )}
+          </div>
+          <div className="metric">
+            <div className="label">ROI</div>
+            <div className="value" style={{ color: (roi.roiPct ?? 0) >= 0 ? "var(--accent-2)" : "var(--danger)" }}>
+              {roi.roiPct != null ? `${roi.roiPct >= 0 ? "+" : ""}${roi.roiPct.toFixed(0)}` : "—"}
+              <small> %</small>
+            </div>
+          </div>
+        </div>
+        <div className="hint" style={{ marginTop: 8 }}>
+          ※ 増収＝(変更後−現在)発電量 × FIT単価 × 残存年数。FIT契約・容量変更に伴う単価/区分の変更や経年劣化は別途確認してください。
+        </div>
       </div>
     </>
   );

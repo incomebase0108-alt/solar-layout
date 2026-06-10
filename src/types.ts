@@ -219,6 +219,12 @@ export interface PowerPlant {
    * null / 0 なら上限なし。最適化・配線でこれを超えると警告する。
    */
   outputCapKw?: number | null;
+  /** FIT買取単価 (円/kWh) — 費用対効果用 */
+  fitPriceYenPerKwh?: number | null;
+  /** FIT残存年数 (年) — 費用対効果用 */
+  fitRemainingYears?: number | null;
+  /** 現在の年間発電量 (kWh/年) — 費用対効果用 */
+  annualGenerationKwh?: number | null;
   createdAt: number;
   /** 図面（現況レイアウト） */
   layout: LayoutProject;

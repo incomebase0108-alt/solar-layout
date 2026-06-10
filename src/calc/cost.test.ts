@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { estimateCost } from "./cost";
+import { estimateCost, estimateRoi, estimateAfterGeneration } from "./cost";
 import type { CostRates } from "../types";
 
 const rates: CostRates = {
@@ -60,5 +60,42 @@ describe("概算コスト", () => {
       newPanelW: 45000, rates,
     });
     expect(r.yenPerW).toBeCloseTo(3_410_000 / 45000, 2);
+  });
+});
+
+describe("変更後発電量の推定", () => {
+  it("容量比でスケールする", () => {
+    // 40kW→45kWで1万kWhが11250kWh
+    expect(estimateAfterGeneration(10000, 40, 45)).toBeCloseTo(11250, 1);
+  });
+  it("前容量0なら0", () => {
+    expect(estimateAfterGeneration(10000, 0, 45)).toBe(0);
+  });
+});
+
+describe("費用対効果", () => {
+  it("増収・回収年数・ROIを算出する", () => {
+    const r = estimateRoi({
+      currentAnnualKwh: 40000,
+      afterAnnualKwh: 45000,
+      fitPriceYenPerKwh: 18,
+      remainingYears: 10,
+      upgradeCostYen: 3_410_000,
+    });
+    // 増分5000kWh × 18 = 90,000円/年, 10年で900,000円
+    expect(r.deltaAnnualKwh).toBe(5000);
+    expect(r.annualRevenueIncreaseYen).toBe(90_000);
+    expect(r.totalRevenueIncreaseYen).toBe(900_000);
+    expect(r.netBenefitYen).toBe(900_000 - 3_410_000);
+    // 回収年数 = 3,410,000 / 90,000 ≈ 37.9年
+    expect(r.paybackYears).toBeCloseTo(37.9, 1);
+  });
+
+  it("増収が0以下なら回収年数はnull", () => {
+    const r = estimateRoi({
+      currentAnnualKwh: 40000, afterAnnualKwh: 40000,
+      fitPriceYenPerKwh: 18, remainingYears: 10, upgradeCostYen: 1_000_000,
+    });
+    expect(r.paybackYears).toBeNull();
   });
 });

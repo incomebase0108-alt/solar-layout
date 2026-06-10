@@ -99,6 +99,7 @@ export default function App() {
           pcsList={pcsStore.pcsList}
           costRates={costStore.costRates}
           setCostRates={costStore.setCostRates}
+          updatePlant={plantStore.updatePlant}
         />
       )}
       {tab === "panel" && <PanelRegistry store={panelStore} />}

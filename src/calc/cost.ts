@@ -103,3 +103,69 @@ export function estimateCost(input: CostInput): CostResult {
 
   return { lines, subtotalYen, miscYen, totalYen, yenPerW };
 }
+
+// ============================================================
+// 費用対効果（ROI）
+// ============================================================
+
+/** 容量比で変更後の年間発電量を推定する（現状発電量 × 後容量/前容量）。 */
+export function estimateAfterGeneration(
+  currentAnnualKwh: number,
+  beforeKw: number,
+  afterKw: number
+): number {
+  if (beforeKw <= 0) return 0;
+  return (currentAnnualKwh * afterKw) / beforeKw;
+}
+
+export interface RoiInput {
+  /** 現在の年間発電量 (kWh/年) */
+  currentAnnualKwh: number;
+  /** 変更後の年間発電量 (kWh/年) */
+  afterAnnualKwh: number;
+  /** FIT買取単価 (円/kWh) */
+  fitPriceYenPerKwh: number;
+  /** FIT残存年数 (年) */
+  remainingYears: number;
+  /** 改修費用 (円) */
+  upgradeCostYen: number;
+}
+
+export interface RoiResult {
+  /** 年間発電量の増分 (kWh/年) */
+  deltaAnnualKwh: number;
+  /** 年間増収 (円/年) */
+  annualRevenueIncreaseYen: number;
+  /** 残存期間の累計増収 (円) */
+  totalRevenueIncreaseYen: number;
+  /** 正味便益 = 累計増収 − 改修費用 (円) */
+  netBenefitYen: number;
+  /** 投資回収年数 (年)。増収が0以下なら null */
+  paybackYears: number | null;
+  /** ROI = 正味便益 / 改修費用 (%)。費用0なら null */
+  roiPct: number | null;
+}
+
+/** 費用対効果を算出する。 */
+export function estimateRoi(input: RoiInput): RoiResult {
+  const deltaAnnualKwh = input.afterAnnualKwh - input.currentAnnualKwh;
+  const annualRevenueIncreaseYen = deltaAnnualKwh * input.fitPriceYenPerKwh;
+  const totalRevenueIncreaseYen = annualRevenueIncreaseYen * input.remainingYears;
+  const netBenefitYen = totalRevenueIncreaseYen - input.upgradeCostYen;
+  const paybackYears =
+    annualRevenueIncreaseYen > 0
+      ? input.upgradeCostYen / annualRevenueIncreaseYen
+      : null;
+  const roiPct =
+    input.upgradeCostYen > 0
+      ? (netBenefitYen / input.upgradeCostYen) * 100
+      : null;
+  return {
+    deltaAnnualKwh,
+    annualRevenueIncreaseYen,
+    totalRevenueIncreaseYen,
+    netBenefitYen,
+    paybackYears,
+    roiPct,
+  };
+}
