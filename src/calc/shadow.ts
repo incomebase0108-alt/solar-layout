@@ -1,9 +1,13 @@
 import type { PanelArray, PanelSpec, ShadowZone, Calibration } from "../types";
+import { arrayGaps } from "../types";
 
 export interface PanelPxDims {
   pw: number;
   ph: number;
-  gapPx: number;
+  /** 横方向（列の左右）の隙間 px */
+  gapXpx: number;
+  /** 縦方向（行の前後）の隙間 px */
+  gapYpx: number;
 }
 
 /** スケール校正から px/m を求める（未校正は暫定 50）。 */
@@ -23,7 +27,8 @@ export function panelPxDims(
   const widM = (panel?.widthMm ?? 1000) / 1000;
   const pw = (arr.orientation === "portrait" ? widM : lenM) * ppm;
   const ph = (arr.orientation === "portrait" ? lenM : widM) * ppm;
-  return { pw, ph, gapPx: arr.gapM * ppm };
+  const { gx, gy } = arrayGaps(arr);
+  return { pw, ph, gapXpx: gx * ppm, gapYpx: gy * ppm };
 }
 
 /** セル (r,c) の中心の画像ピクセル座標。 */
@@ -33,8 +38,8 @@ export function cellCenterImage(
   c: number,
   dims: PanelPxDims
 ): { x: number; y: number } {
-  const lx = c * (dims.pw + dims.gapPx) + dims.pw / 2;
-  const ly = r * (dims.ph + dims.gapPx) + dims.ph / 2;
+  const lx = c * (dims.pw + dims.gapXpx) + dims.pw / 2;
+  const ly = r * (dims.ph + dims.gapYpx) + dims.ph / 2;
   const a = (arr.rotationDeg * Math.PI) / 180;
   return {
     x: arr.posXpx + Math.cos(a) * lx - Math.sin(a) * ly,

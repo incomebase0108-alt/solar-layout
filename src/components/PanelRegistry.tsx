@@ -34,6 +34,8 @@ function emptyPanel(): PanelSpec {
 export function PanelRegistry({ store }: Props) {
   const [draft, setDraft] = useState<PanelSpec>(emptyPanel());
   const [editing, setEditing] = useState(false);
+  // W単価（円/W）。Pmax×W単価＝1枚価格 を自動計算するための入力欄の値。
+  const [wattPrice, setWattPrice] = useState<string>("");
 
   const num =
     (key: keyof PanelSpec) =>
@@ -41,6 +43,44 @@ export function PanelRegistry({ store }: Props) {
       const v = e.target.value;
       setDraft((d) => ({ ...d, [key]: v === "" ? undefined : Number(v) }));
     };
+
+  /** Pmax から W単価の表示値を作る（円/枚 ÷ W、小数2桁） */
+  function wattPriceFrom(unit: number | undefined, pmax: number | undefined): string {
+    if (!unit || !pmax) return "";
+    return String(+(unit / pmax).toFixed(2));
+  }
+
+  /** W単価入力 → Pmax×W単価で 単価(円/枚) を自動計算 */
+  function onWattPriceChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const wp = e.target.value;
+    setWattPrice(wp);
+    setDraft((d) => {
+      if (wp === "") return { ...d, unitPriceYen: undefined };
+      const w = Number(wp);
+      if (d.pmaxW > 0 && !isNaN(w)) return { ...d, unitPriceYen: Math.round(d.pmaxW * w) };
+      return d;
+    });
+  }
+
+  /** 単価(円/枚)を直接編集 → W単価の表示を同期 */
+  function onUnitPriceChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const v = e.target.value;
+    const unit = v === "" ? undefined : Number(v);
+    setDraft((d) => ({ ...d, unitPriceYen: unit }));
+    setWattPrice(wattPriceFrom(unit, draft.pmaxW));
+  }
+
+  /** Pmax編集 → W単価が入っていれば 単価(円/枚) を再計算 */
+  function onPmaxChange(e: React.ChangeEvent<HTMLInputElement>) {
+    const v = e.target.value;
+    const pmax = v === "" ? 0 : Number(v);
+    setDraft((d) => {
+      const next = { ...d, pmaxW: v === "" ? 0 : Number(v) };
+      const w = Number(wattPrice);
+      if (wattPrice !== "" && pmax > 0 && !isNaN(w)) next.unitPriceYen = Math.round(pmax * w);
+      return next;
+    });
+  }
   const str =
     (key: keyof PanelSpec) =>
     (e: React.ChangeEvent<HTMLInputElement>) =>
@@ -62,11 +102,13 @@ export function PanelRegistry({ store }: Props) {
       iscA: Number(draft.iscA) || 0,
     });
     setDraft(emptyPanel());
+    setWattPrice("");
     setEditing(false);
   }
 
   function edit(p: PanelSpec) {
     setDraft({ ...p });
+    setWattPrice(wattPriceFrom(p.unitPriceYen, p.pmaxW));
     setEditing(true);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
@@ -112,7 +154,7 @@ export function PanelRegistry({ store }: Props) {
         <div className="form-grid">
           <div className="field">
             <label>Pmax (W)</label>
-            <input type="number" value={draft.pmaxW || ""} onChange={num("pmaxW")} />
+            <input type="number" value={draft.pmaxW || ""} onChange={onPmaxChange} />
           </div>
           <div className="field">
             <label>Vmp (V)</label>
@@ -143,8 +185,18 @@ export function PanelRegistry({ store }: Props) {
             <input type="number" step="0.01" value={draft.tempCoeffPmaxPctPerC ?? ""} onChange={num("tempCoeffPmaxPctPerC")} />
           </div>
           <div className="field">
-            <label>単価 (円/枚)</label>
-            <input type="number" value={draft.unitPriceYen ?? ""} onChange={num("unitPriceYen")} />
+            <label>W単価 (円/W)</label>
+            <input
+              type="number"
+              step="0.1"
+              placeholder="例) 25"
+              value={wattPrice}
+              onChange={onWattPriceChange}
+            />
+          </div>
+          <div className="field">
+            <label>単価 (円/枚)＝Pmax×W単価</label>
+            <input type="number" value={draft.unitPriceYen ?? ""} onChange={onUnitPriceChange} />
           </div>
           <div className="field" style={{ gridColumn: "1 / -1" }}>
             <label>備考</label>
@@ -161,6 +213,7 @@ export function PanelRegistry({ store }: Props) {
               className="btn secondary"
               onClick={() => {
                 setDraft(emptyPanel());
+                setWattPrice("");
                 setEditing(false);
               }}
             >

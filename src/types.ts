@@ -132,8 +132,10 @@ export interface PanelArray {
   orientation: "portrait" | "landscape";
   rows: number;
   cols: number;
-  /** パネル間の隙間 (m) */
+  /** パネル間の隙間（横方向＝列の左右, m）。両面の桁間など。 */
   gapM: number;
+  /** パネル間の隙間（縦方向＝行の前後, m）。未指定なら gapM を使う。両面の列間（アレイ離隔）用。 */
+  gapYm?: number;
   /** 配列左上の画像ピクセル座標 */
   posXpx: number;
   posYpx: number;
@@ -172,6 +174,11 @@ export function cellKey(r: number, c: number): string {
   return `${r},${c}`;
 }
 
+/** 配列の有効ギャップ(m)。gx=横（列の左右）, gy=縦（行の前後, 未指定は gx と同じ）。 */
+export function arrayGaps(a: PanelArray): { gx: number; gy: number } {
+  return { gx: a.gapM, gy: a.gapYm ?? a.gapM };
+}
+
 /**
  * 影ゾーン：画像ピクセル座標の矩形（軸並行）。
  * この中に入るパネルセルを「影」と判定する。
@@ -183,6 +190,36 @@ export interface ShadowZone {
   w: number;
   h: number;
   label?: string;
+}
+
+/**
+ * 図面の凡例（状況説明）の1行。色見本＋説明文。
+ * 例: 緑＝トリナ360W 150枚 既設 横 / 青＝トリナ645W 20枚 新設 横
+ */
+export interface LegendItem {
+  id: string;
+  /** 色見本（#RRGGBB） */
+  color: string;
+  /** 説明文 */
+  label: string;
+}
+
+/**
+ * パネル構成のまとめ（枚数・出力）。基準スナップショットや現在値の集計に使う。
+ */
+export interface LayoutSummary {
+  totalPanels: number;
+  totalKw: number;
+  /** パネル型式ごとの内訳 */
+  byPanel: { model: string; count: number; kw: number }[];
+}
+
+/**
+ * 現状の基準スナップショット。登録時点の構成を凍結保存し、改修案と前後比較する。
+ */
+export interface LayoutBaseline extends LayoutSummary {
+  /** 登録日時(ミリ秒) */
+  registeredAt: number;
 }
 
 /**
@@ -203,6 +240,10 @@ export interface LayoutProject {
   shadowZones?: ShadowZone[];
   /** 単独パネル（1枚ずつ追加, 任意） */
   freePanels?: FreePanel[];
+  /** 現状の基準スナップショット（任意）。改修案との前後比較用。 */
+  baseline?: LayoutBaseline | null;
+  /** 図面の凡例・状況説明（任意）。写真の下に表示。 */
+  legend?: LegendItem[];
 }
 
 export const EMPTY_LAYOUT: LayoutProject = {
@@ -278,6 +319,39 @@ export interface PowerPlant {
   layout: LayoutProject;
   /** 配線設定 */
   wiring: WiringPlan;
+  /** パワコン構成（機種混在・台数指定）。任意。 */
+  pcsUnits?: PcsUnitLine[];
+}
+
+/**
+ * パワコンのストリング（MPPT入力）1本。
+ * パネル混在可。直列数×並列で枚数、直列数×Vmp で合計電圧。
+ */
+export interface PcsString {
+  id: string;
+  /** 使用パネルマスタ id */
+  panelId: string;
+  /** 直列数（数量） */
+  series: number;
+  /** 並列数（本数）。既定1。 */
+  parallel: number;
+}
+
+/**
+ * パワコン構成の1グループ。機種＋台数＋ストリング構成を持つ。
+ * 同一機種10台でも、別機種を複数グループで組み合わせてもよい。
+ * グループ内の各台は同じストリング構成（strings）を共有する。
+ */
+export interface PcsUnitLine {
+  id: string;
+  /** 参照するパワコンマスタ id */
+  pcsId: string;
+  /** 台数（このストリング構成の台数） */
+  count: number;
+  /** メモ（任意, 例:「南面用」「影区画用」） */
+  note?: string;
+  /** 1台あたりのストリング構成（任意）。未指定なら台数×ACのみ集計。 */
+  strings?: PcsString[];
 }
 
 export const EMPTY_WIRING: WiringPlan = {

@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PanelSpec, LayoutProject, PanelArray, ShadowZone, FreePanel } from "../types";
-import { cellKey } from "../types";
+import type { PanelSpec, LayoutProject, PanelArray, ShadowZone, FreePanel, LegendItem } from "../types";
+import { cellKey, arrayGaps } from "../types";
 import { shadedCellKeys, pointInZones } from "../calc/shadow";
+import { summarizeLayout } from "../calc/layoutCount";
 import { fileToScaledDataUrl } from "../utils/image";
+import { geocodeAddress, buildSeamlessPhoto, calibrationFromScale } from "../utils/gsiMap";
 import { uid } from "../store";
 
 const KEEP_COLOR = "#22c55e"; // 流用（変更しない）パネルの色
@@ -11,6 +13,8 @@ interface Props {
   panels: PanelSpec[];
   layout: LayoutProject;
   patch: (p: Partial<LayoutProject>) => void;
+  /** 発電所の住所（住所→地図の初期値） */
+  defaultAddress?: string;
 }
 
 interface View {
@@ -21,23 +25,58 @@ interface View {
 
 const ARRAY_COLORS = ["#38bdf8", "#22c55e", "#f59e0b", "#a78bfa", "#f472b6"];
 
-export function LayoutEditor({ panels, layout, patch }: Props) {
+/** 角度を (-180, 180] に正規化 */
+function normalizeDeg(d: number): number {
+  let x = ((d % 360) + 360) % 360;
+  if (x > 180) x -= 360;
+  return x;
+}
+
+export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgReady, setImgReady] = useState(false);
+
+  // 元に戻す（Undo）用の履歴。変更前の layout を積む。
+  // 既存の patch 呼び出しはすべてこのラッパ経由になり、自動で履歴対象になる。
+  const historyRef = useRef<LayoutProject[]>([]);
+  const [histLen, setHistLen] = useState(0);
+  const patch = (p: Partial<LayoutProject>) => {
+    historyRef.current.push(layout);
+    if (historyRef.current.length > 50) historyRef.current.shift();
+    setHistLen(historyRef.current.length);
+    rawPatch(p);
+  };
+  function undo() {
+    const prev = historyRef.current.pop();
+    setHistLen(historyRef.current.length);
+    if (prev) rawPatch(prev); // 履歴に積まずに丸ごと復元
+  }
   const [view, setView] = useState<View>({ tx: 40, ty: 40, zoom: 0.5 });
-  const [mode, setMode] = useState<"pan" | "calibrate" | "select" | "shadow" | "remove">("pan");
+  const [mode, setMode] = useState<"pan" | "calibrate" | "select" | "shadow" | "remove" | "scan" | "keeprect">("pan");
+  // 範囲ドラッグで流用/入換を一括指定するときの値（true=流用にする, false=入換にする）
+  const [keepRectValue, setKeepRectValue] = useState(true);
+
+  // 住所 → 地理院タイル取得
+  const [address, setAddress] = useState(defaultAddress ?? "");
+  const [gsiZoom, setGsiZoom] = useState(18);
+  const [gsiSpan, setGsiSpan] = useState(250); // 取得する一辺(m)目安
+  const [gsiBusy, setGsiBusy] = useState(false);
+  const [gsiMsg, setGsiMsg] = useState<string | null>(null);
   const [calibPts, setCalibPts] = useState<{ x: number; y: number }[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [selectedFreeId, setSelectedFreeId] = useState<string | null>(null);
   const [shadowDraft, setShadowDraft] = useState<ShadowZone | null>(null);
+  // スキャン：画面（スクリーン）座標の選択矩形。回転後の見た目に沿ってグリッドを作る。
+  const [scanDraft, setScanDraft] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
 
   // 配置フォーム
   const [formPanelId, setFormPanelId] = useState(panels[0]?.id ?? "");
   const [formOrient, setFormOrient] = useState<"portrait" | "landscape">("portrait");
   const [formRows, setFormRows] = useState(10);
   const [formCols, setFormCols] = useState(10);
-  const [formGap, setFormGap] = useState(0.02);
+  const [formGapX, setFormGapX] = useState(0.02); // 横方向（列の左右）の隙間 m
+  const [formGapY, setFormGapY] = useState(0.02); // 縦方向（行の前後）の隙間 m
 
   const rot = (layout.imageRotationDeg * Math.PI) / 180;
 
@@ -81,6 +120,18 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     [view, rot]
   );
 
+  // 画像座標 → 画面座標（screenToImage の逆変換）
+  const imageToScreen = useCallback(
+    (px: number, py: number) => {
+      const cos = Math.cos(rot);
+      const sin = Math.sin(rot);
+      const rx = cos * px - sin * py;
+      const ry = sin * px + cos * py;
+      return { x: view.tx + view.zoom * rx, y: view.ty + view.zoom * ry };
+    },
+    [view, rot]
+  );
+
   // --- スケール（px/m） ---
   const pixelsPerMeter = (() => {
     const cal = layout.calibration;
@@ -99,7 +150,8 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
         (arr.orientation === "portrait" ? widM : lenM) * pixelsPerMeter;
       const ph =
         (arr.orientation === "portrait" ? lenM : widM) * pixelsPerMeter;
-      return { pw, ph, gapPx: arr.gapM * pixelsPerMeter };
+      const { gx, gy } = arrayGaps(arr);
+      return { pw, ph, gapXpx: gx * pixelsPerMeter, gapYpx: gy * pixelsPerMeter };
     },
     [panels, pixelsPerMeter]
   );
@@ -145,7 +197,7 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     // パネル配列
     for (const arr of layout.arrays) {
       const dims = arrayPanelPx(arr);
-      const { pw, ph, gapPx } = dims;
+      const { pw, ph, gapXpx, gapYpx } = dims;
       ctx.save();
       ctx.translate(arr.posXpx, arr.posYpx);
       ctx.rotate((arr.rotationDeg * Math.PI) / 180);
@@ -155,8 +207,8 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
       const shaded = shadedCellKeys(arr, dims, zones);
       for (let r = 0; r < arr.rows; r++) {
         for (let col = 0; col < arr.cols; col++) {
-          const x = col * (pw + gapPx);
-          const y = r * (ph + gapPx);
+          const x = col * (pw + gapXpx);
+          const y = r * (ph + gapYpx);
           // 撤去セルは空き枠（破線）で表示し、カウントしない
           if (removed.has(cellKey(r, col))) {
             ctx.strokeStyle = "#64748b";
@@ -181,8 +233,8 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
       }
       // 選択枠
       if (selected) {
-        const totalW = arr.cols * pw + (arr.cols - 1) * gapPx;
-        const totalH = arr.rows * ph + (arr.rows - 1) * gapPx;
+        const totalW = arr.cols * pw + (arr.cols - 1) * gapXpx;
+        const totalH = arr.rows * ph + (arr.rows - 1) * gapYpx;
         ctx.strokeStyle = "#fff";
         ctx.setLineDash([6 / view.zoom, 4 / view.zoom]);
         ctx.strokeRect(-4, -4, totalW + 8, totalH + 8);
@@ -249,7 +301,18 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     }
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-  }, [view, rot, layout, selectedId, selectedFreeId, calibPts, shadowDraft, arrayPanelPx, freePanelPx]);
+
+    // スキャンの選択矩形（画面座標＝回転後の見た目に沿う）
+    if (scanDraft) {
+      ctx.fillStyle = "rgba(56,189,248,0.18)";
+      ctx.fillRect(scanDraft.x, scanDraft.y, scanDraft.w, scanDraft.h);
+      ctx.strokeStyle = "#38bdf8";
+      ctx.lineWidth = 1.5;
+      ctx.setLineDash([6, 4]);
+      ctx.strokeRect(scanDraft.x, scanDraft.y, scanDraft.w, scanDraft.h);
+      ctx.setLineDash([]);
+    }
+  }, [view, rot, layout, selectedId, selectedFreeId, calibPts, shadowDraft, scanDraft, arrayPanelPx, freePanelPx]);
 
   useEffect(() => {
     draw();
@@ -281,6 +344,8 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     freeId?: string;
   } | null>(null);
   const shadowStartRef = useRef<{ x: number; y: number } | null>(null);
+  // スキャンの開始点（画面座標）
+  const scanStartRef = useRef<{ sx: number; sy: number } | null>(null);
 
   function hitFree(ix: number, iy: number): FreePanel | null {
     const fps = layout.freePanels ?? [];
@@ -310,9 +375,9 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
   function hitArray(ix: number, iy: number): PanelArray | null {
     for (let i = layout.arrays.length - 1; i >= 0; i--) {
       const arr = layout.arrays[i];
-      const { pw, ph, gapPx } = arrayPanelPx(arr);
-      const totalW = arr.cols * pw + (arr.cols - 1) * gapPx;
-      const totalH = arr.rows * ph + (arr.rows - 1) * gapPx;
+      const { pw, ph, gapXpx, gapYpx } = arrayPanelPx(arr);
+      const totalW = arr.cols * pw + (arr.cols - 1) * gapXpx;
+      const totalH = arr.rows * ph + (arr.rows - 1) * gapYpx;
       const dx = ix - arr.posXpx;
       const dy = iy - arr.posYpx;
       const a = (-arr.rotationDeg * Math.PI) / 180;
@@ -327,18 +392,18 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
   function hitCell(ix: number, iy: number): { arr: PanelArray; r: number; col: number } | null {
     for (let i = layout.arrays.length - 1; i >= 0; i--) {
       const arr = layout.arrays[i];
-      const { pw, ph, gapPx } = arrayPanelPx(arr);
+      const { pw, ph, gapXpx, gapYpx } = arrayPanelPx(arr);
       const dx = ix - arr.posXpx;
       const dy = iy - arr.posYpx;
       const a = (-arr.rotationDeg * Math.PI) / 180;
       const lx = Math.cos(a) * dx - Math.sin(a) * dy;
       const ly = Math.sin(a) * dx + Math.cos(a) * dy;
-      const col = Math.floor(lx / (pw + gapPx));
-      const r = Math.floor(ly / (ph + gapPx));
+      const col = Math.floor(lx / (pw + gapXpx));
+      const r = Math.floor(ly / (ph + gapYpx));
       if (r >= 0 && r < arr.rows && col >= 0 && col < arr.cols) {
         // セル内（隙間でない）か確認
-        const cx = lx - col * (pw + gapPx);
-        const cy = ly - r * (ph + gapPx);
+        const cx = lx - col * (pw + gapXpx);
+        const cy = ly - r * (ph + gapYpx);
         if (cx <= pw && cy <= ph) return { arr, r, col };
       }
     }
@@ -406,6 +471,12 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
 
     if (mode === "shadow") {
       shadowStartRef.current = screenToImage(sx, sy);
+      return;
+    }
+
+    if (mode === "scan" || mode === "keeprect") {
+      // 画面座標で記録（回転後の見た目に沿って囲む）。scan と 範囲流用 で共用。
+      scanStartRef.current = { sx, sy };
       return;
     }
 
@@ -491,10 +562,22 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
 
-    // 影ゾーンのドラッグ描画
+    // 影ゾーンのドラッグ矩形描画（画像座標）
     if (mode === "shadow" && shadowStartRef.current) {
       const cur = screenToImage(sx, sy);
       setShadowDraft(rectFrom(shadowStartRef.current, cur));
+      return;
+    }
+
+    // スキャン／範囲流用のドラッグ矩形描画（画面座標＝回転後の見た目に沿う）
+    if ((mode === "scan" || mode === "keeprect") && scanStartRef.current) {
+      const s = scanStartRef.current;
+      setScanDraft({
+        x: Math.min(s.sx, sx),
+        y: Math.min(s.sy, sy),
+        w: Math.abs(sx - s.sx),
+        h: Math.abs(sy - s.sy),
+      });
       return;
     }
 
@@ -545,17 +628,136 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
       }
       setShadowDraft(null);
     }
+    // スキャン／範囲流用：画面で囲んだ範囲を確定
+    if ((mode === "scan" || mode === "keeprect") && scanStartRef.current) {
+      scanStartRef.current = null;
+      if (scanDraft && scanDraft.w > 4 && scanDraft.h > 4) {
+        if (mode === "scan") scanFromScreenRect(scanDraft);
+        else applyKeepRect(scanDraft, keepRectValue);
+      }
+      setScanDraft(null);
+    }
   }
 
-  function onWheel(e: React.WheelEvent) {
-    const c = canvasRef.current!;
-    const rect = c.getBoundingClientRect();
-    const sx = e.clientX - rect.left;
-    const sy = e.clientY - rect.top;
-    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+  /**
+   * 画面で囲んだ範囲内のセルをまとめて流用/入換にする。
+   * value=true で流用（緑）に、false で入換に。撤去セルは対象外。
+   */
+  function applyKeepRect(r: { x: number; y: number; w: number; h: number }, value: boolean) {
+    const x2 = r.x + r.w;
+    const y2 = r.y + r.h;
+    const arrays = layout.arrays.map((arr) => {
+      const dims = arrayPanelPx(arr);
+      const { pw, ph, gapXpx, gapYpx } = dims;
+      const a = (arr.rotationDeg * Math.PI) / 180;
+      const cos = Math.cos(a);
+      const sin = Math.sin(a);
+      const keep = new Set(arr.keepCells ?? []);
+      const removed = new Set(arr.removedCells ?? []);
+      for (let row = 0; row < arr.rows; row++) {
+        for (let col = 0; col < arr.cols; col++) {
+          const k = cellKey(row, col);
+          if (removed.has(k)) continue;
+          // セル中心の画像座標（配列の回転を反映）→ 画面座標
+          const lx = col * (pw + gapXpx) + pw / 2;
+          const ly = row * (ph + gapYpx) + ph / 2;
+          const ix = arr.posXpx + cos * lx - sin * ly;
+          const iy = arr.posYpx + sin * lx + cos * ly;
+          const s = imageToScreen(ix, iy);
+          if (s.x >= r.x && s.x <= x2 && s.y >= r.y && s.y <= y2) {
+            if (value) keep.add(k);
+            else keep.delete(k);
+          }
+        }
+      }
+      return { ...arr, keepCells: [...keep] };
+    });
+    patch({ arrays });
+  }
+
+  /**
+   * 画面（スクリーン）で囲んだ矩形から、実寸÷パネル寸法で行×列を自動計算し配列を生成。
+   * 生成する配列は画面の見た目に沿わせる（rotationDeg = -画像回転）ので、
+   * 「写真を回してパネル列を水平にする → スキャン」で実パネルにグリッドが一致する。
+   * スケール校正が前提（地理院地図なら自動設定済み）。
+   */
+  function scanFromScreenRect(r: { x: number; y: number; w: number; h: number }) {
+    if (!formPanelId) {
+      alert("先に下の「パネル」を選択してください");
+      return;
+    }
+    if (!layout.calibration) {
+      alert("スケール未設定です。地理院地図の取得か、基準寸法の設定を先に行ってください");
+      return;
+    }
+    const panel = panels.find((p) => p.id === formPanelId);
+    if (!panel) return;
+    const lenM = panel.lengthMm / 1000;
+    const widM = panel.widthMm / 1000;
+    const pwM = formOrient === "portrait" ? widM : lenM; // 1枚の横幅(m)
+    const phM = formOrient === "portrait" ? lenM : widM; // 1枚の高さ(m)
+    if (pwM <= 0 || phM <= 0) {
+      alert("選択したパネルの寸法が未登録です");
+      return;
+    }
+    // 画面px → メートル（zoom: 画面px/画像px、pixelsPerMeter: 画像px/m）
+    const mPerScreenPx = 1 / (view.zoom * pixelsPerMeter);
+    const realW = r.w * mPerScreenPx;
+    const realH = r.h * mPerScreenPx;
+    const cols = Math.max(1, Math.floor((realW + formGapX) / (pwM + formGapX)));
+    const rows = Math.max(1, Math.floor((realH + formGapY) / (phM + formGapY)));
+    // 配列の原点（左上）は画面矩形の左上に対応する画像座標
+    const tl = screenToImage(r.x, r.y);
+    // 画面で水平に見えるよう、画像回転を打ち消す角度を配列に持たせる
+    const arrRot = normalizeDeg(-layout.imageRotationDeg);
+    const arr: PanelArray = {
+      id: uid("arr"),
+      panelId: formPanelId,
+      orientation: formOrient,
+      rows,
+      cols,
+      gapM: formGapX,
+      gapYm: formGapY,
+      posXpx: tl.x,
+      posYpx: tl.y,
+      rotationDeg: arrRot,
+      color: ARRAY_COLORS[layout.arrays.length % ARRAY_COLORS.length],
+    };
+    patch({ arrays: [...layout.arrays, arr] });
+    setSelectedId(arr.id);
+  }
+
+  // ホイールズーム：React の onWheel は passive 登録で preventDefault が効かず
+  // ページがスクロールしてしまうため、ネイティブの非passiveリスナーで実装する。
+  useEffect(() => {
+    const c = canvasRef.current;
+    if (!c) return;
+    const handler = (e: WheelEvent) => {
+      e.preventDefault(); // ページスクロールを止める
+      const rect = c.getBoundingClientRect();
+      const sx = e.clientX - rect.left;
+      const sy = e.clientY - rect.top;
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      setView((v) => {
+        const nz = Math.max(0.05, Math.min(8, v.zoom * factor));
+        // カーソル位置を固定してズーム
+        const tx = sx - (sx - v.tx) * (nz / v.zoom);
+        const ty = sy - (sy - v.ty) * (nz / v.zoom);
+        return { tx, ty, zoom: nz };
+      });
+    };
+    c.addEventListener("wheel", handler, { passive: false });
+    return () => c.removeEventListener("wheel", handler);
+  }, [layout.imageDataUrl]); // キャンバスがマウントされた後に確実に貼る
+
+  /** ＋/− ボタン用：キャンバス中心を固定して拡大縮小 */
+  function zoomByCentered(factor: number) {
+    const c = canvasRef.current;
+    if (!c) return;
+    const sx = c.width / 2;
+    const sy = c.height / 2;
     setView((v) => {
       const nz = Math.max(0.05, Math.min(8, v.zoom * factor));
-      // カーソル位置を固定してズーム
       const tx = sx - (sx - v.tx) * (nz / v.zoom);
       const ty = sy - (sy - v.ty) * (nz / v.zoom);
       return { tx, ty, zoom: nz };
@@ -575,8 +777,73 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     e.target.value = "";
   }
 
+  /** 住所を地理院ジオコーディング→航空写真を取得し、背景＋スケールを自動設定 */
+  async function loadFromAddress() {
+    const q = address.trim();
+    if (!q) {
+      setGsiMsg("住所を入力してください");
+      return;
+    }
+    setGsiBusy(true);
+    setGsiMsg("住所を検索中…");
+    try {
+      const geo = await geocodeAddress(q);
+      if (!geo) {
+        setGsiMsg("住所が見つかりませんでした。表記を変えて再検索してください。");
+        return;
+      }
+      setGsiMsg(`地図を取得中…（${geo.label}）`);
+      const photo = await buildSeamlessPhoto(geo.lat, geo.lon, gsiZoom, gsiSpan);
+      const cal = calibrationFromScale(photo.metersPerPixel, photo.heightPx, 50);
+      // 既存の配置・影はクリア（新しい台紙のため）。校正は自動設定。
+      patch({
+        imageDataUrl: photo.dataUrl,
+        calibration: cal,
+        arrays: [],
+        freePanels: [],
+        shadowZones: [],
+        imageRotationDeg: 0,
+        imageOpacity: 1,
+      });
+      setGsiMsg(
+        `取得完了：${geo.label}｜ズーム${photo.zoom}｜スケール ${(1 / photo.metersPerPixel).toFixed(1)} px/m（自動校正済み・出典:地理院タイル）`
+      );
+    } catch (err) {
+      setGsiMsg(err instanceof Error ? err.message : "地図の取得に失敗しました");
+    } finally {
+      setGsiBusy(false);
+    }
+  }
+
+  /**
+   * 画像を回転する。画面中心にある画像上の点を軸に回す（view を補正）ので、
+   * 拡大中でも見ている被写体が画面外へ飛ばない。
+   */
+  function setRotation(newDeg: number) {
+    const c = canvasRef.current;
+    const deg = ((newDeg % 360) + 360) % 360;
+    if (!c) {
+      patch({ imageRotationDeg: deg });
+      return;
+    }
+    const Cx = c.width / 2;
+    const Cy = c.height / 2;
+    const rot0 = (layout.imageRotationDeg * Math.PI) / 180;
+    const rot1 = (deg * Math.PI) / 180;
+    // 現在、画面中心にある画像上の点 P0 を求める（screenToImage と同じ式）
+    const a = (Cx - view.tx) / view.zoom;
+    const b = (Cy - view.ty) / view.zoom;
+    const p0x = Math.cos(rot0) * a + Math.sin(rot0) * b;
+    const p0y = -Math.sin(rot0) * a + Math.cos(rot0) * b;
+    // 新しい回転で P0 が画面中心に来るよう平行移動を補正
+    const tx = Cx - view.zoom * (Math.cos(rot1) * p0x - Math.sin(rot1) * p0y);
+    const ty = Cy - view.zoom * (Math.sin(rot1) * p0x + Math.cos(rot1) * p0y);
+    setView((v) => ({ ...v, tx, ty }));
+    patch({ imageRotationDeg: deg });
+  }
+
   function rotate(delta: number) {
-    patch({ imageRotationDeg: (layout.imageRotationDeg + delta + 360) % 360 });
+    setRotation(layout.imageRotationDeg + delta);
   }
 
   function exportPng() {
@@ -605,10 +872,12 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
       orientation: formOrient,
       rows: formRows,
       cols: formCols,
-      gapM: formGap,
+      gapM: formGapX,
+      gapYm: formGapY,
       posXpx: center.x,
       posYpx: center.y,
-      rotationDeg: 0,
+      // 画面の見た目（回転後）に合わせる。スキャンのグリッドと同じ向きになる。
+      rotationDeg: normalizeDeg(-layout.imageRotationDeg),
       color: ARRAY_COLORS[layout.arrays.length % ARRAY_COLORS.length],
     };
     patch({ arrays: [...layout.arrays, arr] });
@@ -621,6 +890,23 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
   function deleteArray(id: string) {
     patch({ arrays: layout.arrays.filter((a) => a.id !== id) });
     if (selectedId === id) setSelectedId(null);
+  }
+
+  /** 単独パネル（free panel）だけを全消去。Undoで戻せる。 */
+  function clearFreePanels() {
+    if ((layout.freePanels?.length ?? 0) === 0) return;
+    if (!confirm(`単独パネル ${layout.freePanels?.length ?? 0} 枚をすべて消去します。よろしいですか？（「戻す」で復元可）`)) return;
+    patch({ freePanels: [] });
+    setSelectedFreeId(null);
+  }
+
+  /** 配置した配列・単独パネル（＝画面上のグリッド線）を全消去。Undoで戻せる。 */
+  function clearAllArrays() {
+    if (layout.arrays.length === 0 && (layout.freePanels?.length ?? 0) === 0) return;
+    if (!confirm("配置したパネル配列をすべて消去します。よろしいですか？（「戻す」で復元可）")) return;
+    patch({ arrays: [], freePanels: [] });
+    setSelectedId(null);
+    setSelectedFreeId(null);
   }
 
   function addFreePanel() {
@@ -638,7 +924,8 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
       orientation: formOrient,
       posXpx: center.x,
       posYpx: center.y,
-      rotationDeg: 0,
+      // 画面の見た目（回転後）に合わせる
+      rotationDeg: normalizeDeg(-layout.imageRotationDeg),
       color: "#f472b6",
     };
     patch({ freePanels: [...(layout.freePanels ?? []), fp] });
@@ -673,6 +960,80 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     patch({ shadowZones: [] });
   }
 
+  /** いまの構成を「現状（基準）」として凍結保存する（現況＝既存配列の全数）。 */
+  function registerBaseline() {
+    const sum = summarizeLayout(layout, panels, "genkyo");
+    if (sum.totalPanels === 0) {
+      alert("現況の既存パネルがありません。配列に『流用』を指定してから登録してください（流用マークのある配列＝既存と判定します）。");
+      return;
+    }
+    if (
+      layout.baseline &&
+      !confirm("すでに基準が登録されています。今の構成で上書きしますか？")
+    )
+      return;
+    patch({ baseline: { ...sum, registeredAt: Date.now() } });
+  }
+
+  function clearBaseline() {
+    if (!confirm("登録した基準を削除します。よろしいですか？（戻すで復元可）")) return;
+    patch({ baseline: null });
+  }
+
+  // --- 凡例（写真の下の状況説明） ---
+  const legend = layout.legend ?? [];
+  /** 図面から凡例を自動生成（流用＝既設・緑／入換・新規＝新設・青、型式ごと）。 */
+  function genLegend() {
+    const map = new Map<string, { existing: number; added: number; orient: string; name: string; w: number }>();
+    const touch = (panelId: string, orient: string) => {
+      const p = panels.find((x) => x.id === panelId);
+      const key = panelId;
+      const cur = map.get(key) ?? {
+        existing: 0,
+        added: 0,
+        orient,
+        name: `${p?.maker ?? ""} ${p?.model ?? ""}`.trim() || "未登録パネル",
+        w: p?.pmaxW ?? 0,
+      };
+      map.set(key, cur);
+      return cur;
+    };
+    // 配列単位で判定：流用マークあり＝既設（流用数）／無し＝新設（全数）。
+    // 既存配列の入換セル（流用でない分）は撤去されるため凡例には出さない。
+    for (const a of layout.arrays) {
+      const keepN = a.keepCells?.length ?? 0;
+      const full = a.rows * a.cols - (a.removedCells?.length ?? 0);
+      const cur = touch(a.panelId, a.orientation === "portrait" ? "縦" : "横");
+      if (keepN > 0) cur.existing += keepN;
+      else cur.added += full;
+    }
+    for (const f of layout.freePanels ?? []) {
+      const cur = touch(f.panelId, f.orientation === "portrait" ? "縦" : "横");
+      cur.added++;
+    }
+    const items: LegendItem[] = [];
+    for (const v of map.values()) {
+      if (v.existing > 0)
+        items.push({ id: uid("lg"), color: KEEP_COLOR, label: `${v.name} ${v.w}W ${v.existing}枚 既設 ${v.orient}` });
+      if (v.added > 0)
+        items.push({ id: uid("lg"), color: "#38bdf8", label: `${v.name} ${v.w}W ${v.added}枚 新設 ${v.orient}` });
+    }
+    if (items.length === 0) {
+      alert("配列がありません。先にパネルを配置してください。");
+      return;
+    }
+    patch({ legend: items });
+  }
+  function addLegend() {
+    patch({ legend: [...legend, { id: uid("lg"), color: "#22c55e", label: "" }] });
+  }
+  function updateLegend(id: string, p: Partial<LegendItem>) {
+    patch({ legend: legend.map((l) => (l.id === id ? { ...l, ...p } : l)) });
+  }
+  function removeLegend(id: string) {
+    patch({ legend: legend.filter((l) => l.id !== id) });
+  }
+
   function setAllPlant(keepAll: boolean) {
     patch({
       arrays: layout.arrays.map((a) => {
@@ -689,6 +1050,50 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     <>
       <div className="card">
         <h2>現況レイアウト（航空写真トレース）</h2>
+
+        <h3>住所から地図を取得（地理院タイル）</h3>
+        <div className="row" style={{ alignItems: "flex-end", flexWrap: "wrap" }}>
+          <div className="field" style={{ flex: 1, minWidth: 240 }}>
+            <label>住所</label>
+            <input
+              type="text"
+              value={address}
+              placeholder="例）愛知県西尾市吉良町吉田西川畔"
+              onChange={(e) => setAddress(e.target.value)}
+              onKeyDown={(e) => { if (e.key === "Enter" && !gsiBusy) loadFromAddress(); }}
+            />
+          </div>
+          <div className="field" style={{ width: 120 }}>
+            <label>詳細さ（ズーム）</label>
+            <select value={gsiZoom} onChange={(e) => setGsiZoom(Number(e.target.value))}>
+              <option value={16}>16（広い・粗い）</option>
+              <option value={17}>17</option>
+              <option value={18}>18（最も詳細）</option>
+            </select>
+          </div>
+          <div className="field" style={{ width: 130 }}>
+            <label>範囲・一辺(m)</label>
+            <input
+              type="number"
+              min={50}
+              step={50}
+              value={gsiSpan}
+              onChange={(e) => setGsiSpan(Number(e.target.value))}
+            />
+          </div>
+          <button className="btn small" onClick={loadFromAddress} disabled={gsiBusy}>
+            {gsiBusy ? "取得中…" : "地図を取得"}
+          </button>
+        </div>
+        <div className="hint" style={{ marginTop: 4 }}>
+          住所→航空写真を自動取得。<strong>スケールも自動設定</strong>されるので基準寸法の手入力は不要です。
+          範囲を広げると視野が広く・詳細さは粗くなります。出典：地理院タイル（国土地理院）。
+          {gsiMsg && (
+            <div style={{ marginTop: 4, color: "#38bdf8" }}>{gsiMsg}</div>
+          )}
+        </div>
+
+        <h3>または写真をアップロード</h3>
         <div className="row">
           <label className="btn secondary small" style={{ cursor: "pointer" }}>
             写真をアップロード
@@ -714,7 +1119,7 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
         </div>
 
         {!layout.imageDataUrl && (
-          <div className="empty">写真をアップロードすると、ここに表示されます。</div>
+          <div className="empty">住所から地図を取得するか、写真をアップロードすると、ここに表示されます。</div>
         )}
 
         {layout.imageDataUrl && (
@@ -732,7 +1137,7 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
                   min={0}
                   max={359}
                   value={layout.imageRotationDeg}
-                  onChange={(e) => patch({ imageRotationDeg: Number(e.target.value) })}
+                  onChange={(e) => setRotation(Number(e.target.value))}
                 />
               </div>
               <div className="field" style={{ width: 160 }}>
@@ -777,6 +1182,24 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
               >
                 {mode === "select" ? "選択中：パネルをクリックで切替" : "流用/入換を指定"}
               </button>
+              <button
+                className={`btn small ${mode === "keeprect" && keepRectValue ? "" : "secondary"}`}
+                onClick={() => {
+                  setKeepRectValue(true);
+                  setMode(mode === "keeprect" && keepRectValue ? "pan" : "keeprect");
+                }}
+              >
+                {mode === "keeprect" && keepRectValue ? "範囲流用中：ドラッグで囲む" : "▦ 範囲を流用（ドラッグ）"}
+              </button>
+              <button
+                className={`btn small ${mode === "keeprect" && !keepRectValue ? "" : "secondary"}`}
+                onClick={() => {
+                  setKeepRectValue(false);
+                  setMode(mode === "keeprect" && !keepRectValue ? "pan" : "keeprect");
+                }}
+              >
+                {mode === "keeprect" && !keepRectValue ? "範囲入換中：ドラッグで囲む" : "▦ 範囲を入換（ドラッグ）"}
+              </button>
               <button className="btn secondary small" onClick={() => setAllPlant(true)}>
                 全部を流用
               </button>
@@ -784,8 +1207,8 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
                 全部を入換
               </button>
               <span className="hint">
-                <span style={{ color: KEEP_COLOR }}>■</span> 緑＝流用（変更しない）／ その他＝入換対象。
-                指定モードで個別パネルをクリックして切替。
+                <span style={{ color: KEEP_COLOR }}>■</span> 緑＝流用（変更しない）／ その他＝入換対象。<br />
+                <strong>範囲ドラッグ</strong>でまとめて指定（下段だけ入換など）、または個別クリックで1枚ずつ切替。
               </span>
             </div>
 
@@ -833,18 +1256,100 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
       </div>
 
       {layout.imageDataUrl && (
-        <div className="card" style={{ padding: 0, overflow: "hidden" }}>
+        <div className="card" style={{ padding: 0, overflow: "hidden", position: "relative" }}>
           <canvas
             ref={canvasRef}
-            style={{ display: "block", width: "100%", cursor: mode === "pan" ? "grab" : "crosshair" }}
+            style={{ display: "block", width: "100%", cursor: mode === "pan" ? "grab" : "crosshair", touchAction: "none" }}
             onMouseDown={onMouseDown}
             onMouseMove={onMouseMove}
             onMouseUp={onMouseUp}
             onMouseLeave={onMouseUp}
-            onWheel={onWheel}
           />
+          {/* 戻す・全消去（左上にオーバーレイ） */}
+          <div
+            style={{ position: "absolute", top: 10, left: 10, display: "flex", gap: 6 }}
+          >
+            <button
+              className="btn secondary small"
+              title="一つ前の状態に戻す"
+              onClick={undo}
+              disabled={histLen === 0}
+            >
+              ↩ 戻す
+            </button>
+            <button
+              className="btn danger small"
+              title="配置したパネル配列を全消去"
+              onClick={clearAllArrays}
+              disabled={layout.arrays.length === 0 && (layout.freePanels?.length ?? 0) === 0}
+            >
+              🗑 全消去
+            </button>
+          </div>
+          {/* 拡大縮小ボタン（右上にオーバーレイ） */}
+          <div
+            style={{
+              position: "absolute",
+              top: 10,
+              right: 10,
+              display: "flex",
+              flexDirection: "column",
+              gap: 6,
+            }}
+          >
+            <button className="btn secondary small" title="拡大" onClick={() => zoomByCentered(1.25)}>＋</button>
+            <button className="btn secondary small" title="縮小" onClick={() => zoomByCentered(1 / 1.25)}>－</button>
+            <button
+              className="btn secondary small"
+              title="全体表示"
+              onClick={() => imgRef.current && fitToView(imgRef.current)}
+            >
+              ⤢
+            </button>
+          </div>
           <div className="hint" style={{ padding: "6px 12px" }}>
-            ドラッグ＝移動／ホイール＝ズーム／配列をドラッグで位置調整
+            ドラッグ＝移動／ホイール or ＋−ボタン＝ズーム／⤢＝全体表示／↩戻す・🗑全消去／配列をドラッグで位置調整
+          </div>
+
+          {/* 写真の下：現状の説明・凡例 */}
+          <div style={{ padding: "8px 12px", borderTop: "1px solid #1e293b" }}>
+            <div className="row" style={{ alignItems: "center" }}>
+              <strong>現状の説明・凡例</strong>
+              <span className="spacer" />
+              <button className="btn secondary small no-print" onClick={genLegend}>図面から自動生成</button>
+              <button className="btn secondary small no-print" onClick={addLegend}>＋ 行を追加</button>
+            </div>
+            {legend.length === 0 ? (
+              <div className="hint" style={{ marginTop: 4 }}>
+                「図面から自動生成」で 緑＝既設／青＝新設 の説明を作成。手入力で枚数・既設/新設・向きを調整できます。
+              </div>
+            ) : (
+              <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 6 }}>
+                {legend.map((l) => (
+                  <div key={l.id} className="row" style={{ gap: 8, alignItems: "center" }}>
+                    <input
+                      type="color"
+                      value={l.color}
+                      title="色"
+                      onChange={(e) => updateLegend(l.id, { color: e.target.value })}
+                      style={{ width: 34, height: 28, padding: 0, border: "none", background: "none", cursor: "pointer" }}
+                    />
+                    <span
+                      aria-hidden
+                      style={{ width: 14, height: 14, borderRadius: 3, background: l.color, display: "inline-block", flex: "0 0 auto" }}
+                    />
+                    <input
+                      type="text"
+                      value={l.label}
+                      placeholder="例) トリナソーラー 360W 150枚 既設 横"
+                      onChange={(e) => updateLegend(l.id, { label: e.target.value })}
+                      style={{ flex: 1, minWidth: 200 }}
+                    />
+                    <button className="btn danger small no-print" onClick={() => removeLegend(l.id)}>×</button>
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -880,21 +1385,52 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
                 <input type="number" min={1} value={formCols} onChange={(e) => setFormCols(Number(e.target.value))} />
               </div>
               <div className="field">
-                <label>パネル間隔 (m)</label>
-                <input type="number" step={0.01} value={formGap} onChange={(e) => setFormGap(Number(e.target.value))} />
+                <label>横の隙間 (m)</label>
+                <input type="number" step={0.01} value={formGapX} onChange={(e) => setFormGapX(Number(e.target.value))} />
+              </div>
+              <div className="field">
+                <label>縦の隙間 (m)</label>
+                <input type="number" step={0.01} value={formGapY} onChange={(e) => setFormGapY(Number(e.target.value))} />
               </div>
               <div className="field" style={{ justifyContent: "flex-end" }}>
                 <button className="btn" onClick={addArray}>配列を追加</button>
               </div>
             </div>
           )}
+          <div className="hint" style={{ marginTop: 4 }}>
+            <strong>横の隙間</strong>＝パネルの左右（桁間）、<strong>縦の隙間</strong>＝行の前後（アレイ離隔）。
+            両面パネルは裏面採光のため<strong>縦（前後）の隙間を広め</strong>に取るのが一般的です。
+          </div>
+
+          {panels.length > 0 && (
+            <div className="row" style={{ marginTop: 6, padding: "8px 10px", background: "#0b1220", borderRadius: 8 }}>
+              <button
+                className={`btn small ${mode === "scan" ? "" : "secondary"}`}
+                onClick={() => setMode(mode === "scan" ? "pan" : "scan")}
+              >
+                {mode === "scan" ? "スキャン中：アレイをドラッグで囲む" : "🔍 既設パネルをスキャン（範囲ドラッグ）"}
+              </button>
+              <span className="hint">
+                上で選んだ<strong>パネル・向き・間隔</strong>を使い、囲んだ範囲の<strong>実寸÷パネル寸法</strong>で
+                行×列を自動計算して配列を生成します。
+                {layout.calibration ? "" : "（先に地理院地図の取得かスケール設定が必要）"}
+                アレイが斜めなら、先に写真を回して水平にしてから囲むと正確です。
+              </span>
+            </div>
+          )}
 
           {panels.length > 0 && (
             <div className="row" style={{ marginTop: 6 }}>
               <button className="btn secondary" onClick={addFreePanel}>＋ 1枚追加（単独パネル）</button>
+              {freeCount > 0 && (
+                <>
+                  <span className="badge">単独パネル {freeCount} 枚</span>
+                  <button className="btn danger small" onClick={clearFreePanels}>単独パネルを全消去</button>
+                </>
+              )}
               <span className="hint">
-                上の「パネル」「向き」で1枚だけ追加。ドラッグで移動・選択して回転/向き変更。
-                端の増設や、横置きの中に縦置きを混ぜる用。
+                上の「パネル」「向き」で<strong>1枚だけ</strong>追加（ピンク）。端の増設や、横置きの中に縦置きを混ぜる用。
+                ※「配列を追加」は<strong>行×列のまとまり</strong>を置くボタンで別物です（1×1だと1枚に見えます）。
               </span>
             </div>
           )}
@@ -962,7 +1498,15 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
                       </td>
                       <td>{a.orientation === "portrait" ? "縦" : "横"}</td>
                       <td className="num">
-                        <button className="btn danger small" onClick={(e) => { e.stopPropagation(); deleteArray(a.id); }}>削除</button>
+                        <div className="row" style={{ justifyContent: "flex-end", gap: 6 }}>
+                          <button
+                            className={`btn small ${a.id === selectedId ? "" : "secondary"}`}
+                            onClick={(e) => { e.stopPropagation(); setSelectedId(a.id); setSelectedFreeId(null); }}
+                          >
+                            編集
+                          </button>
+                          <button className="btn danger small" onClick={(e) => { e.stopPropagation(); deleteArray(a.id); }}>削除</button>
+                        </div>
                       </td>
                     </tr>
                   );
@@ -975,6 +1519,14 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
             <div style={{ marginTop: 12 }}>
               <h3>選択中の配列を調整</h3>
               <div className="form-grid">
+                <div className="field" style={{ gridColumn: "1 / -1" }}>
+                  <label>パネル（型式の変更）</label>
+                  <select value={selected.panelId} onChange={(e) => updateArray(selected.id, { panelId: e.target.value })}>
+                    {panels.map((p) => (
+                      <option key={p.id} value={p.id}>{p.maker} {p.model}</option>
+                    ))}
+                  </select>
+                </div>
                 <div className="field">
                   <label>行数</label>
                   <input type="number" min={1} value={selected.rows} onChange={(e) => updateArray(selected.id, { rows: Number(e.target.value) })} />
@@ -994,6 +1546,19 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
                     <option value="landscape">横置き</option>
                   </select>
                 </div>
+                <div className="field">
+                  <label>横の隙間 (m)</label>
+                  <input type="number" step={0.01} value={selected.gapM} onChange={(e) => updateArray(selected.id, { gapM: Number(e.target.value) })} />
+                </div>
+                <div className="field">
+                  <label>縦の隙間 (m)</label>
+                  <input
+                    type="number"
+                    step={0.01}
+                    value={selected.gapYm ?? selected.gapM}
+                    onChange={(e) => updateArray(selected.id, { gapYm: Number(e.target.value) })}
+                  />
+                </div>
               </div>
               <div className="row" style={{ marginTop: 8 }}>
                 <span className="hint">この配列の流用指定：</span>
@@ -1004,6 +1569,80 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
               </div>
             </div>
           )}
+        </div>
+      )}
+
+      {layout.imageDataUrl && (
+        <div className="card">
+          <h2>現状の基準登録 ＆ 前後比較</h2>
+          <div className="row">
+            <button className="btn" onClick={registerBaseline}>
+              {layout.baseline ? "現状を再登録（上書き）" : "現状を基準として登録"}
+            </button>
+            {layout.baseline && (
+              <button className="btn secondary small" onClick={clearBaseline}>基準を削除</button>
+            )}
+            <span className="hint">
+              <strong>現状（基準）＝流用マークのある既存配列の全数</strong>（新設パネルは除外）。
+              <strong>改修案＝既存は流用枚数＋新設パネル</strong>で計算します。
+            </span>
+          </div>
+
+          {(() => {
+            const cur = summarizeLayout(layout, panels, "kaishu");
+            const base = layout.baseline;
+            const fmt = (n: number) => n.toLocaleString();
+            const kw = (n: number) => n.toFixed(1);
+            return (
+              <table className="list" style={{ marginTop: 12 }}>
+                <thead>
+                  <tr>
+                    <th></th>
+                    <th className="num">合計枚数</th>
+                    <th className="num">合計出力(kW)</th>
+                    <th>型式内訳</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td><strong>現状（基準）</strong>
+                      <div className="hint">{base ? "登録済み" : "未登録"}</div>
+                    </td>
+                    <td className="num">{base ? fmt(base.totalPanels) : "—"}</td>
+                    <td className="num">{base ? kw(base.totalKw) : "—"}</td>
+                    <td className="hint">
+                      {base
+                        ? base.byPanel.map((b) => `${b.model}：${fmt(b.count)}枚(${kw(b.kw)}kW)`).join(" / ")
+                        : "「現状を基準として登録」を押すと記録されます"}
+                    </td>
+                  </tr>
+                  <tr>
+                    <td><strong>現在（改修案）</strong></td>
+                    <td className="num">{fmt(cur.totalPanels)}</td>
+                    <td className="num">{kw(cur.totalKw)}</td>
+                    <td className="hint">
+                      {cur.byPanel.map((b) => `${b.model}：${fmt(b.count)}枚(${kw(b.kw)}kW)`).join(" / ") || "—"}
+                    </td>
+                  </tr>
+                  {base && (
+                    <tr style={{ background: "#0b1220" }}>
+                      <td><strong>差分（改修−現状）</strong></td>
+                      <td className="num" style={{ color: cur.totalPanels - base.totalPanels >= 0 ? "#22c55e" : "#f43f5e" }}>
+                        {cur.totalPanels - base.totalPanels >= 0 ? "+" : ""}{fmt(cur.totalPanels - base.totalPanels)}
+                      </td>
+                      <td className="num" style={{ color: cur.totalKw - base.totalKw >= 0 ? "#22c55e" : "#f43f5e" }}>
+                        {cur.totalKw - base.totalKw >= 0 ? "+" : ""}{kw(cur.totalKw - base.totalKw)}
+                      </td>
+                      <td className="hint">出力が増える分はパワコン上限（低圧≈49.5kW）でピークカットされる点に注意</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            );
+          })()}
+          <div className="hint" style={{ marginTop: 6 }}>
+            ※ 入れ替えで撤去する既存パネルは「パネルを撤去」で外すと、現在（改修案）の枚数に正しく反映されます。
+          </div>
         </div>
       )}
     </>

@@ -5,17 +5,19 @@ import { StringCalculator } from "./components/StringCalculator";
 import { LayoutEditor } from "./components/LayoutEditor";
 import { PlantManager } from "./components/PlantManager";
 import { WiringTable } from "./components/WiringTable";
+import { PcsComposer } from "./components/PcsComposer";
 import { Optimizer } from "./components/Optimizer";
 import { CostEstimator } from "./components/CostEstimator";
 import { ExistingPcsCheck } from "./components/ExistingPcsCheck";
 import { usePanels, usePcsList, useConditions, usePlants, useCostRates } from "./store";
 
-type Tab = "plant" | "layout" | "optimize" | "wiring" | "existing" | "cost" | "panel" | "pcs" | "string";
+type Tab = "plant" | "layout" | "optimize" | "pcsunits" | "wiring" | "existing" | "cost" | "panel" | "pcs" | "string";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "plant", label: "発電所" },
   { key: "layout", label: "現況レイアウト" },
   { key: "optimize", label: "入換最適化" },
+  { key: "pcsunits", label: "パワコン構成" },
   { key: "wiring", label: "パワコン配線表" },
   { key: "existing", label: "既設パワコン確認" },
   { key: "cost", label: "概算コスト" },
@@ -79,10 +81,19 @@ export default function App() {
           panels={panelStore.panels}
           layout={current.layout}
           patch={plantStore.patchLayout}
+          defaultAddress={current.address}
         />
       )}
       {tab === "optimize" && current && (
         <Optimizer plant={current} panels={panelStore.panels} />
+      )}
+      {tab === "pcsunits" && current && (
+        <PcsComposer
+          plant={current}
+          panels={panelStore.panels}
+          pcsList={pcsStore.pcsList}
+          updatePlant={plantStore.updatePlant}
+        />
       )}
       {tab === "wiring" && current && (
         <WiringTable
