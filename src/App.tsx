@@ -6,15 +6,17 @@ import { LayoutEditor } from "./components/LayoutEditor";
 import { PlantManager } from "./components/PlantManager";
 import { WiringTable } from "./components/WiringTable";
 import { Optimizer } from "./components/Optimizer";
-import { usePanels, usePcsList, useConditions, usePlants } from "./store";
+import { CostEstimator } from "./components/CostEstimator";
+import { usePanels, usePcsList, useConditions, usePlants, useCostRates } from "./store";
 
-type Tab = "plant" | "layout" | "optimize" | "wiring" | "panel" | "pcs" | "string";
+type Tab = "plant" | "layout" | "optimize" | "wiring" | "cost" | "panel" | "pcs" | "string";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "plant", label: "発電所" },
   { key: "layout", label: "現況レイアウト" },
   { key: "optimize", label: "入換最適化" },
   { key: "wiring", label: "パワコン配線表" },
+  { key: "cost", label: "概算コスト" },
   { key: "panel", label: "パネル登録" },
   { key: "pcs", label: "パワコン登録" },
   { key: "string", label: "ストリング計算" },
@@ -25,6 +27,7 @@ export default function App() {
   const panelStore = usePanels();
   const pcsStore = usePcsList();
   const condStore = useConditions();
+  const costStore = useCostRates();
   const plantStore = usePlants();
   const current = plantStore.current;
 
@@ -86,6 +89,16 @@ export default function App() {
           pcsList={pcsStore.pcsList}
           conditions={condStore.conditions}
           patchWiring={plantStore.patchWiring}
+        />
+      )}
+      {tab === "cost" && current && (
+        <CostEstimator
+          key={current.id}
+          plant={current}
+          panels={panelStore.panels}
+          pcsList={pcsStore.pcsList}
+          costRates={costStore.costRates}
+          setCostRates={costStore.setCostRates}
         />
       )}
       {tab === "panel" && <PanelRegistry store={panelStore} />}

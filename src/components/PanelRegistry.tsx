@@ -26,6 +26,7 @@ function emptyPanel(): PanelSpec {
     iscA: 0,
     tempCoeffVocPctPerC: -0.27,
     tempCoeffPmaxPctPerC: -0.34,
+    unitPriceYen: undefined,
     note: "",
   };
 }
@@ -140,6 +141,10 @@ export function PanelRegistry({ store }: Props) {
           <div className="field">
             <label>Pmax 温度係数</label>
             <input type="number" step="0.01" value={draft.tempCoeffPmaxPctPerC ?? ""} onChange={num("tempCoeffPmaxPctPerC")} />
+          </div>
+          <div className="field">
+            <label>単価 (円/枚)</label>
+            <input type="number" value={draft.unitPriceYen ?? ""} onChange={num("unitPriceYen")} />
           </div>
           <div className="field" style={{ gridColumn: "1 / -1" }}>
             <label>備考</label>

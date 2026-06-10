@@ -24,6 +24,7 @@ function emptyPcs(): PcsSpec {
     mpptVoltageMaxV: 0,
     startVoltageV: undefined,
     maxInputCurrentPerMpptA: 0,
+    unitPriceYen: undefined,
     note: "",
   };
 }
@@ -121,6 +122,10 @@ export function PcsRegistry({ store }: Props) {
           <div className="field">
             <label>MPPTあたり最大入力電流 (A)</label>
             <input type="number" step="0.1" value={draft.maxInputCurrentPerMpptA || ""} onChange={num("maxInputCurrentPerMpptA")} />
+          </div>
+          <div className="field">
+            <label>単価 (円/台)</label>
+            <input type="number" value={draft.unitPriceYen ?? ""} onChange={num("unitPriceYen")} />
           </div>
           <div className="field" style={{ gridColumn: "1 / -1" }}>
             <label>備考</label>

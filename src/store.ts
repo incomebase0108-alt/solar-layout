@@ -6,8 +6,14 @@ import type {
   LayoutProject,
   PowerPlant,
   WiringPlan,
+  CostRates,
 } from "./types";
-import { DEFAULT_CONDITIONS, EMPTY_LAYOUT, EMPTY_WIRING } from "./types";
+import {
+  DEFAULT_CONDITIONS,
+  EMPTY_LAYOUT,
+  EMPTY_WIRING,
+  DEFAULT_COST_RATES,
+} from "./types";
 
 // ============================================================
 // LocalStorage ベースの簡易永続化ストア
@@ -22,6 +28,7 @@ export const KEYS = {
   layout: "solar-layout.layout",
   plants: "solar-layout.plants",
   currentPlant: "solar-layout.currentPlant",
+  costRates: "solar-layout.costRates",
 } as const;
 
 function load<T>(key: string, fallback: T): T {
@@ -138,6 +145,14 @@ export function useConditions() {
   );
   useEffect(() => save(KEYS.conditions, conditions), [conditions]);
   return { conditions, setConditions };
+}
+
+export function useCostRates() {
+  const [costRates, setCostRates] = useState<CostRates>(() =>
+    load(KEYS.costRates, DEFAULT_COST_RATES)
+  );
+  useEffect(() => save(KEYS.costRates, costRates), [costRates]);
+  return { costRates, setCostRates };
 }
 
 function newPlant(name: string, layout?: LayoutProject): PowerPlant {

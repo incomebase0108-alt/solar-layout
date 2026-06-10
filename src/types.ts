@@ -41,6 +41,9 @@ export interface PanelSpec {
   /** Pmax の温度係数 (%/℃, 通常マイナス) 例: -0.34 */
   tempCoeffPmaxPctPerC?: number;
 
+  /** 単価（円/枚, 任意）— 概算コスト用 */
+  unitPriceYen?: number;
+
   /** 備考 */
   note?: string;
 }
@@ -77,6 +80,9 @@ export interface PcsSpec {
   startVoltageV?: number;
   /** 1 MPPT あたりの最大入力電流 (A) */
   maxInputCurrentPerMpptA: number;
+
+  /** 単価（円/台, 任意）— 概算コスト用 */
+  unitPriceYen?: number;
 
   /** 備考 */
   note?: string;
@@ -227,4 +233,30 @@ export const EMPTY_WIRING: WiringPlan = {
   parallelPerMppt: 0,
   totalPanelsOverride: null,
   allowMixedPanelSeries: false,
+};
+
+// ============================================================
+// 概算コスト用の単価設定（工事費・諸経費率）
+//   材料費はマスタの unitPriceYen、工事費はここの設定を使う。
+//   値は編集前提の目安プレースホルダ。
+// ============================================================
+export interface CostRates {
+  /** 既設パネル撤去 (円/枚) */
+  panelRemovalYen: number;
+  /** 新パネル設置工事 (円/枚) */
+  panelInstallYen: number;
+  /** 既設パワコン撤去 (円/台) */
+  pcsRemovalYen: number;
+  /** 新パワコン設置工事 (円/台) */
+  pcsInstallYen: number;
+  /** 諸経費率 (%) — 小計に対して加算 */
+  miscRatePct: number;
+}
+
+export const DEFAULT_COST_RATES: CostRates = {
+  panelRemovalYen: 3000,
+  panelInstallYen: 8000,
+  pcsRemovalYen: 15000,
+  pcsInstallYen: 30000,
+  miscRatePct: 10,
 };
