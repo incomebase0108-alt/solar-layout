@@ -285,7 +285,7 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
               <select value={g.line.pcsId} onChange={(e) => changeUnitPcs(g.line.id, e.target.value)}>
                 {pcsList.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.maker} {p.model}（{p.kind === "existing" ? "既設" : "新設"} / {p.ratedPowerKw}kW）
+                    {p.maker} {p.model}（{p.kind === "existing" ? "既設" : "新設"} / {p.ratedPowerKw}kW{p.warranty ? ` / ${p.warranty}` : ""}）
                   </option>
                 ))}
               </select>
@@ -432,7 +432,7 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
               {computed.map((g) => (
                 <tr key={g.line.id}>
                   <td>#{g.no}</td>
-                  <td><strong>{g.pcs ? `${g.pcs.maker} ${g.pcs.model}` : "—"}</strong></td>
+                  <td><strong>{g.pcs ? `${g.pcs.maker} ${g.pcs.model}${g.pcs.warranty ? `（${g.pcs.warranty}）` : ""}` : "—"}</strong></td>
                   <td className="num">{kw(g.ratedKw)}</td>
                   <td className="num">{kw(g.unitDcKw)}</td>
                   <td className="num">{g.unitCells}</td>

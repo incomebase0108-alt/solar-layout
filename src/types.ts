@@ -91,9 +91,15 @@ export interface PcsSpec {
   /** 単価（円/台, 任意）— 概算コスト用 */
   unitPriceYen?: number;
 
+  /** 保証区分（"10年保証" / "20年保証" / "オプション" / 空=未指定）。同一型番を保証・単価違いで複数登録するために使う */
+  warranty?: string;
+
   /** 備考 */
   note?: string;
 }
+
+/** 保証区分の選択肢（フォームのプルダウン用） */
+export const WARRANTY_OPTIONS = ["", "10年保証", "20年保証", "オプション"] as const;
 
 /**
  * ストリング設計の前提条件（現地の温度条件など）

@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { PcsSpec } from "../types";
+import { WARRANTY_OPTIONS } from "../types";
 import { uid } from "../store";
 
 interface Props {
@@ -26,6 +27,7 @@ function emptyPcs(): PcsSpec {
     startVoltageV: undefined,
     maxInputCurrentPerMpptA: 0,
     unitPriceYen: undefined,
+    warranty: "",
     note: "",
   };
 }
@@ -58,6 +60,13 @@ export function PcsRegistry({ store }: Props) {
   function edit(p: PcsSpec) {
     setDraft({ ...p });
     setEditing(true);
+    window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  /** 既存パワコンを複製してフォームに展開（新規登録モード）。保証・単価だけ変えて登録すればバリエーションが作れる */
+  function duplicate(p: PcsSpec) {
+    setDraft({ ...p, id: uid("pcs") });
+    setEditing(false);
     window.scrollTo({ top: 0, behavior: "smooth" });
   }
 
@@ -138,6 +147,19 @@ export function PcsRegistry({ store }: Props) {
             <label>単価 (円/台)</label>
             <input type="number" value={draft.unitPriceYen ?? ""} onChange={num("unitPriceYen")} />
           </div>
+          <div className="field">
+            <label>保証</label>
+            <select
+              value={draft.warranty ?? ""}
+              onChange={(e) => setDraft((d) => ({ ...d, warranty: e.target.value }))}
+            >
+              {WARRANTY_OPTIONS.map((w) => (
+                <option key={w} value={w}>
+                  {w === "" ? "未指定" : w}
+                </option>
+              ))}
+            </select>
+          </div>
           <div className="field" style={{ gridColumn: "1 / -1" }}>
             <label>備考</label>
             <input value={draft.note ?? ""} onChange={str("note")} />
@@ -185,6 +207,11 @@ export function PcsRegistry({ store }: Props) {
                   <td>
                     <div>{p.maker}</div>
                     <strong>{p.model}</strong>
+                    {p.warranty && (
+                      <div>
+                        <span className="badge new" style={{ marginTop: 2 }}>{p.warranty}</span>
+                      </div>
+                    )}
                   </td>
                   <td>
                     <span className={`badge ${p.kind}`}>
@@ -198,6 +225,7 @@ export function PcsRegistry({ store }: Props) {
                   <td className="num">
                     <div className="row" style={{ justifyContent: "flex-end" }}>
                       <button className="btn secondary small" onClick={() => edit(p)}>編集</button>
+                      <button className="btn secondary small" onClick={() => duplicate(p)} title="この内容をコピーして新規登録（保証・単価違いを作る）">複製</button>
                       <button className="btn danger small" onClick={() => confirm(`${p.model} を削除しますか？`) && store.remove(p.id)}>削除</button>
                     </div>
                   </td>

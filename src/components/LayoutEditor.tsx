@@ -1185,7 +1185,8 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
             return `${pn ? pn.model : "—"}×${s.series}直${s.parallel > 1 ? `×${s.parallel}並` : ""}`;
           })
           .join("、");
-        pcsRows += `<tr><td>#${no}</td><td>${esc(pcs ? `${pcs.maker} ${pcs.model}` : "—")}</td><td style="text-align:right">${ac.toFixed(2)}</td><td>${esc(str)}</td></tr>`;
+        const pcsName = pcs ? `${pcs.maker} ${pcs.model}${pcs.warranty ? `（${pcs.warranty}）` : ""}` : "—";
+        pcsRows += `<tr><td>#${no}</td><td>${esc(pcsName)}</td><td style="text-align:right">${ac.toFixed(2)}</td><td>${esc(str)}</td></tr>`;
       }
     }
     const baseRow = base
