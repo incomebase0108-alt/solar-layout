@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PanelSpec, LayoutProject, PanelArray, ShadowZone, FreePanel, LegendItem, PcsUnitLine } from "../types";
+import type { PanelSpec, LayoutProject, PanelArray, ShadowZone, FreePanel, LegendItem, PcsUnitLine, PcsSpec } from "../types";
 import { cellKey, arrayGaps } from "../types";
 import { shadedCellKeys, pointInZones } from "../calc/shadow";
 import { summarizeLayout } from "../calc/layoutCount";
@@ -18,6 +18,12 @@ interface Props {
   defaultAddress?: string;
   /** パワコン構成（結線図の割付に使用） */
   pcsUnits?: PcsUnitLine[];
+  /** パワコンマスタ（工事説明書のパワコン構成表に使用） */
+  pcsList?: PcsSpec[];
+  /** 発電所名（工事説明書の表紙に使用） */
+  plantName?: string;
+  /** 顧客名（工事説明書の表紙に使用） */
+  customerName?: string;
 }
 
 interface View {
@@ -35,7 +41,7 @@ function normalizeDeg(d: number): number {
   return x;
 }
 
-export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, pcsUnits }: Props) {
+export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, pcsUnits, pcsList, plantName, customerName }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgReady, setImgReady] = useState(false);
@@ -65,6 +71,8 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   const [removeRectValue, setRemoveRectValue] = useState(true);
   // 現状手入力の登録確認メッセージ
   const [manualMsg, setManualMsg] = useState<string | null>(null);
+  // パネルにW値を表示するか
+  const [showW, setShowW] = useState(true);
   // 結線表示モード（パワコン構成からストリングを自動割付して色＋番号で描画）
   const [wireMode, setWireMode] = useState(false);
   // 結線の手編集：true=クリックで上書き割付, 値は割付先
@@ -369,23 +377,24 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
             ctx.fillStyle = "rgba(15,23,42,0.55)";
             ctx.fillRect(x, y, pw, ph);
           }
-          // 混在（別型式に上書きしたセル）：橙の縁＋W値を表示
+          // パネルのW値を表示（混在セルは別型式のWを橙で）。ズーム十分なときのみ。
           const ovId = arr.cellPanels?.[cellKey(r, col)];
-          if (ovId && ovId !== arr.panelId) {
-            const op = panels.find((p) => p.id === ovId);
+          const isOv = !!ovId && ovId !== arr.panelId;
+          const effPanel = panels.find((p) => p.id === (isOv ? ovId : arr.panelId));
+          if (isOv) {
             ctx.strokeStyle = "#f59e0b";
             ctx.lineWidth = 2 / view.zoom;
             ctx.strokeRect(x + 1 / view.zoom, y + 1 / view.zoom, pw - 2 / view.zoom, ph - 2 / view.zoom);
-            const fs = Math.min(ph * 0.42, pw * 0.42);
-            if (op && fs * view.zoom >= 5) {
-              ctx.fillStyle = "#f59e0b";
-              ctx.font = `bold ${fs}px sans-serif`;
-              ctx.textAlign = "center";
-              ctx.textBaseline = "middle";
-              ctx.fillText(String(op.pmaxW), x + pw / 2, y + ph / 2);
-              ctx.textAlign = "start";
-              ctx.textBaseline = "alphabetic";
-            }
+          }
+          const fsW = Math.min(ph * 0.4, pw * 0.42);
+          if (showW && effPanel && fsW * view.zoom >= 5) {
+            ctx.fillStyle = isOv ? "#f59e0b" : "#0b1220";
+            ctx.font = `bold ${fsW}px sans-serif`;
+            ctx.textAlign = "center";
+            ctx.textBaseline = "middle";
+            ctx.fillText(String(effPanel.pmaxW), x + pw / 2, y + ph / 2);
+            ctx.textAlign = "start";
+            ctx.textBaseline = "alphabetic";
           }
         }
       }
@@ -470,7 +479,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       ctx.strokeRect(scanDraft.x, scanDraft.y, scanDraft.w, scanDraft.h);
       ctx.setLineDash([]);
     }
-  }, [view, rot, layout, selectedId, selectedFreeId, calibPts, shadowDraft, scanDraft, wiring, arrayPanelPx, freePanelPx]);
+  }, [view, rot, layout, selectedId, selectedFreeId, calibPts, shadowDraft, scanDraft, wiring, showW, arrayPanelPx, freePanelPx]);
 
   useEffect(() => {
     draw();
@@ -1132,6 +1141,126 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     setWiringOverrides({});
   }
 
+  /** 工事説明書PDF：表紙＋現在の図面＋完成後(結線図)＋パワコン構成 を1つの印刷用に出す。 */
+  async function exportConstructionPdf() {
+    const c = canvasRef.current;
+    if (!c) {
+      alert("先に住所から地図を取得するか写真をアップロードしてください。");
+      return;
+    }
+    const esc = (s: string) =>
+      s.replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]!));
+    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+    const origWire = wireMode;
+    // 現在の図面（結線オフ）
+    setWireMode(false);
+    await sleep(220);
+    const imgLayout = c.toDataURL("image/jpeg", 0.9);
+    // 完成後＝結線図（結線オン）
+    setWireMode(true);
+    await sleep(300);
+    const imgWiring = c.toDataURL("image/jpeg", 0.9);
+    setWireMode(origWire);
+
+    // 集計
+    const base = layout.baseline;
+    const after = summarizeLayout(layout, panels, "kaishu");
+    const fmt = (n: number) => n.toLocaleString();
+    const kw = (n: number) => n.toFixed(1);
+
+    // パワコン構成表
+    const units = pcsUnits ?? [];
+    let pcsRows = "";
+    let totalAc = 0;
+    let no = 0;
+    for (const u of units) {
+      const pcs = pcsList?.find((p) => p.id === u.pcsId);
+      const ac = pcs?.ratedPowerKw ?? 0;
+      for (let i = 0; i < u.count; i++) {
+        no++;
+        totalAc += ac;
+        const str = (u.strings ?? [])
+          .map((s) => {
+            const pn = panels.find((p) => p.id === s.panelId);
+            return `${pn ? pn.model : "—"}×${s.series}直${s.parallel > 1 ? `×${s.parallel}並` : ""}`;
+          })
+          .join("、");
+        pcsRows += `<tr><td>#${no}</td><td>${esc(pcs ? `${pcs.maker} ${pcs.model}` : "—")}</td><td style="text-align:right">${ac.toFixed(2)}</td><td>${esc(str)}</td></tr>`;
+      }
+    }
+    const baseRow = base
+      ? `<tr><td>現状（改修前）</td><td style="text-align:right">${fmt(base.totalPanels)}</td><td style="text-align:right">${kw(base.totalKw)}</td></tr>`
+      : "";
+    const afterRow = `<tr><td>完成後（改修案）</td><td style="text-align:right">${fmt(after.totalPanels)}</td><td style="text-align:right">${kw(after.totalKw)}</td></tr>`;
+    const legendHtml = legend
+      .map((l) => `<span style="display:inline-flex;align-items:center;margin:0 10px 4px 0"><span style="width:11px;height:11px;background:${l.color};border-radius:2px;margin-right:4px"></span>${esc(l.label)}</span>`)
+      .join("");
+    const today = new Date().toISOString().slice(0, 10);
+
+    const w = window.open("", "_blank");
+    if (!w) {
+      alert("ポップアップがブロックされました。許可してから再実行してください。");
+      return;
+    }
+    w.document.write(
+      `<!DOCTYPE html><html><head><meta charset="utf-8"><title>工事説明書</title>
+<style>
+@page{size:A4 landscape;margin:10mm}
+body{font-family:sans-serif;color:#0b1220;margin:0}
+.page{page-break-after:always;padding:6mm}
+.page:last-child{page-break-after:auto}
+h1{font-size:20px;margin:0 0 6px} h2{font-size:15px;border-bottom:2px solid #0b1220;padding-bottom:3px}
+img{width:100%;height:auto;border:1px solid #cbd5e1;margin-top:6px}
+table{border-collapse:collapse;width:100%;font-size:12px;margin-top:6px}
+th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align:left}
+.meta{font-size:13px} .meta td{border:none;padding:2px 8px 2px 0}
+.lg{font-size:11px;margin-top:6px}
+</style></head><body>
+
+<div class="page">
+  <h1>太陽光発電設備 改修工事説明書</h1>
+  <table class="meta">
+    <tr><td>発電所</td><td>${esc(plantName ?? "—")}</td></tr>
+    <tr><td>顧客名</td><td>${esc(customerName ?? "—")}</td></tr>
+    <tr><td>作成日</td><td>${today}</td></tr>
+  </table>
+  <h2>工事概要</h2>
+  <table>
+    <tr><th>区分</th><th style="text-align:right">パネル枚数</th><th style="text-align:right">出力(kW)</th></tr>
+    ${baseRow}${afterRow}
+  </table>
+  <table style="margin-top:8px">
+    <tr><th>パワコン構成</th><th style="text-align:right">合計AC(kW)</th><th style="text-align:right">台数</th></tr>
+    <tr><td>新設パワコン</td><td style="text-align:right">${totalAc.toFixed(2)}</td><td style="text-align:right">${no} 台</td></tr>
+  </table>
+</div>
+
+<div class="page">
+  <h2>① 現在の図面（改修前）</h2>
+  <img src="${imgLayout}"/>
+  <div class="lg">${legendHtml}</div>
+</div>
+
+<div class="page">
+  <h2>② 完成後の図面（結線図・パワコン割付）</h2>
+  <img src="${imgWiring}"/>
+</div>
+
+<div class="page">
+  <h2>③ パワコン構成</h2>
+  <table>
+    <tr><th>#</th><th>機種</th><th style="text-align:right">AC(kW)</th><th>ストリング</th></tr>
+    ${pcsRows || '<tr><td colspan="4">パワコン構成が未設定です。</td></tr>'}
+    <tr><th colspan="2">合計</th><th style="text-align:right">${totalAc.toFixed(2)}</th><th>${no} 台</th></tr>
+  </table>
+</div>
+
+<script>window.onload=function(){setTimeout(function(){window.print();},400);};</script>
+</body></html>`
+    );
+    w.document.close();
+  }
+
   function addArray() {
     if (!formPanelId) {
       alert("パネルを登録・選択してください");
@@ -1750,6 +1879,12 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
               >
                 {wireMode ? "🔌 結線表示：ON" : "🔌 結線図を表示（パワコン割付）"}
               </button>
+              <button className="btn secondary small no-print" onClick={exportConstructionPdf} title="表紙＋現在の図面＋完成後＋パワコン構成をPDFに">
+                📄 工事説明書PDF
+              </button>
+              <button className={`btn small no-print ${showW ? "" : "secondary"}`} onClick={() => setShowW(!showW)} title="パネルにW値を表示">
+                {showW ? "W表示：ON" : "W表示：OFF"}
+              </button>
               {wireMode && (
                 <>
                   <button
@@ -2093,21 +2228,22 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
       {(layout.imageDataUrl || layout.baseline || manualCurrent.length > 0 || layout.arrays.length > 0) && (
         <div className="card">
           <h2>現状の基準登録 ＆ 前後比較</h2>
-          <div className="row">
-            <button className="btn" onClick={registerBaseline}>
-              {layout.baseline ? "現状を再登録（上書き）" : "現状を基準として登録"}
-            </button>
-            {layout.baseline && (
-              <button className="btn secondary small" onClick={clearBaseline}>基準を削除</button>
-            )}
-            {manualMsg ? (
-              <strong style={{ color: "#22c55e" }}>{manualMsg}</strong>
+          <div className="row" style={{ alignItems: "center", flexWrap: "wrap" }}>
+            {!layout.baseline ? (
+              <button className="btn" onClick={registerBaseline}>現状を基準登録（改修前を保存）</button>
             ) : (
-              <span className="hint">
-                <strong>現状（基準）＝流用マークのある既存配列の全数</strong>（新設パネルは除外）。
-                <strong>改修案＝既存は流用枚数＋新設パネル</strong>で計算します。
-              </span>
+              <>
+                <span className="badge new">✓ 現状（基準）登録済み・固定</span>
+                <button className="btn secondary small" onClick={registerBaseline}>取り直す（今の内容で上書き）</button>
+                <button className="btn danger small" onClick={clearBaseline}>削除</button>
+              </>
             )}
+            {manualMsg && <strong style={{ color: "#22c55e" }}>{manualMsg}</strong>}
+          </div>
+          <div className="hint" style={{ marginTop: 4 }}>
+            <strong>現状（基準）＝改修前</strong>：登録した時点で固定（図面を編集しても変わりません）。
+            <strong>改修案＝改修後</strong>：図面の編集に合わせて<strong>自動更新</strong>（登録操作は不要）。
+            「取り直す」を押すと現状が今の内容で上書きされます。
           </div>
 
           {(() => {
@@ -2127,19 +2263,19 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
                 </thead>
                 <tbody>
                   <tr>
-                    <td><strong>現状（基準）</strong>
-                      <div className="hint">{base ? "登録済み" : "未登録"}</div>
+                    <td><strong>現状（基準・改修前）</strong>
+                      <div className="hint">{base ? "登録済み・固定" : "未登録"}</div>
                     </td>
                     <td className="num">{base ? fmt(base.totalPanels) : "—"}</td>
                     <td className="num">{base ? kw(base.totalKw) : "—"}</td>
                     <td className="hint">
                       {base
                         ? base.byPanel.map((b) => `${b.model}：${fmt(b.count)}枚(${kw(b.kw)}kW)`).join(" / ")
-                        : "「現状を基準として登録」を押すと記録されます"}
+                        : "「現状を基準登録」を押すと記録されます"}
                     </td>
                   </tr>
                   <tr>
-                    <td><strong>現在（改修案）</strong></td>
+                    <td><strong>改修案（改修後・自動）</strong></td>
                     <td className="num">{fmt(cur.totalPanels)}</td>
                     <td className="num">{kw(cur.totalKw)}</td>
                     <td className="hint">
@@ -2148,7 +2284,7 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
                   </tr>
                   {base && (
                     <tr style={{ background: "#0b1220" }}>
-                      <td><strong>差分（改修−現状）</strong></td>
+                      <td><strong>差分（改修後−現状）</strong></td>
                       <td className="num" style={{ color: cur.totalPanels - base.totalPanels >= 0 ? "#22c55e" : "#f43f5e" }}>
                         {cur.totalPanels - base.totalPanels >= 0 ? "+" : ""}{fmt(cur.totalPanels - base.totalPanels)}
                       </td>

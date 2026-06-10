@@ -98,6 +98,9 @@ export default function App() {
           patch={plantStore.patchLayout}
           defaultAddress={current.address}
           pcsUnits={current.pcsUnits}
+          pcsList={pcsStore.pcsList}
+          plantName={current.name}
+          customerName={current.customerName}
         />
       )}
       {tab === "pcsunits" && current && (
