@@ -146,6 +146,7 @@ function newPlant(name: string, layout?: LayoutProject): PowerPlant {
     name,
     address: "",
     note: "",
+    outputCapKw: null,
     createdAt: Date.now(),
     layout: layout ?? { ...EMPTY_LAYOUT },
     wiring: { ...EMPTY_WIRING },

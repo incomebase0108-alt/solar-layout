@@ -59,6 +59,18 @@ describe("入換最適化", () => {
     expect(hi.totalKw).toBeCloseTo((2 * 400 + 98 * 450) / 1000, 1);
   });
 
+  it("出力上限を超える案を判定し、上限内を優先する", () => {
+    // base 400W×100=40kW(上限内), hi 450W×100=45kW(上限超過)
+    const { proposals } = optimizeReplacement(arrays, [base, sameSizeHi], [base, sameSizeHi], 5, 5, 42);
+    const hi = proposals.find((p) => p.panel.id === "hi");
+    const bs = proposals.find((p) => p.panel.id === "base");
+    expect(hi!.overCap).toBe(true);
+    expect(bs!.overCap).toBe(false);
+    // 上限内(base)が上限超過(hi)より上位
+    expect(proposals.findIndex((p) => p.panel.id === "base"))
+      .toBeLessThan(proposals.findIndex((p) => p.panel.id === "hi"));
+  });
+
   it("最大5案に制限", () => {
     const many = Array.from({ length: 12 }, (_, i) => ({ ...sameSizeHi, id: `p${i}`, model: `M${i}`, pmaxW: 400 + i }));
     const { proposals } = optimizeReplacement(arrays, many, many, 5, 5);

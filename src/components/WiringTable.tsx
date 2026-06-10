@@ -162,7 +162,10 @@ export function WiringTable({ plant, panels, pcsList, conditions, patchWiring }:
         ))}
       </div>
 
-      {wiring && pcs && panel && (
+      {wiring && pcs && panel && (() => {
+        const dcKw = (wiring.usedPanels * panel.pmaxW) / 1000;
+        const overCap = !!plant.outputCapKw && dcKw > plant.outputCapKw + 1e-6;
+        return (
         <>
           <div className="card">
             <h2>集計</h2>
@@ -185,12 +188,17 @@ export function WiringTable({ plant, panels, pcsList, conditions, patchWiring }:
               </div>
               <div className="metric">
                 <div className="label">DC 容量</div>
-                <div className="value">
-                  {((wiring.usedPanels * panel.pmaxW) / 1000).toFixed(1)}
-                  <small> kW</small>
+                <div className="value" style={{ color: overCap ? "var(--danger)" : undefined }}>
+                  {dcKw.toFixed(1)}
+                  <small> kW{plant.outputCapKw ? ` / 上限 ${plant.outputCapKw}` : ""}</small>
                 </div>
               </div>
             </div>
+            {overCap && (
+              <div className="warn-item" style={{ marginTop: 6 }}>
+                ⚠ DC容量 {dcKw.toFixed(1)}kW が出力上限 {plant.outputCapKw}kW を超過しています。買取単価区分に注意。
+              </div>
+            )}
             {wiring.warnings.map((wr, i) => (
               <div className="warn-item" key={i} style={{ marginTop: 6 }}>⚠ {wr}</div>
             ))}
@@ -242,7 +250,8 @@ export function WiringTable({ plant, panels, pcsList, conditions, patchWiring }:
             </div>
           </div>
         </>
-      )}
+        );
+      })()}
     </>
   );
 }

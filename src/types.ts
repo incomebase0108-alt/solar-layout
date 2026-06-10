@@ -208,6 +208,11 @@ export interface PowerPlant {
   address?: string;
   /** 連系容量などの備考 */
   note?: string;
+  /**
+   * パネル出力(DC)の上限 (kW)。FIT買取価格区分を超えないための上限。
+   * null / 0 なら上限なし。最適化・配線でこれを超えると警告する。
+   */
+  outputCapKw?: number | null;
   createdAt: number;
   /** 図面（現況レイアウト） */
   layout: LayoutProject;

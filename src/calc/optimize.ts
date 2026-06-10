@@ -43,6 +43,10 @@ export interface ReplacementProposal {
   infeasibleArrays: number;
   /** 最小寸法余裕(%, 大きいほど余裕) */
   minMarginPct: number;
+  /** 出力上限(kW)を超えるか（上限未設定なら false） */
+  overCap: boolean;
+  /** 上限に対する余裕(kW, 正＝余裕)。上限未設定なら null */
+  capHeadroomKw: number | null;
   /** ラベル（この案の強み） */
   label: string;
   notes: string[];
@@ -98,8 +102,10 @@ export function optimizeReplacement(
   panels: PanelSpec[],
   candidates: PanelSpec[],
   tolerancePct: number,
-  maxProposals = 5
+  maxProposals = 5,
+  capKw: number | null = null
 ): { current: CurrentSummary; proposals: ReplacementProposal[] } {
+  const hasCap = capKw != null && capKw > 0;
   const current = currentSummary(arrays, panels);
   const slots = arrays.map((a) => slotOf(a, panels));
   const tol = 1 + tolerancePct / 100;
@@ -154,15 +160,18 @@ export function optimizeReplacement(
         feasible: infeasibleArrays === 0,
         infeasibleArrays,
         minMarginPct: minMargin === Infinity ? 0 : minMargin * 100,
+        overCap: hasCap ? totalKw > capKw! + 1e-6 : false,
+        capHeadroomKw: hasCap ? capKw! - totalKw : null,
         label: "",
         notes: [],
       });
     }
   }
 
-  // 完全フィット優先 → 出力大きい順
+  // 完全フィット優先 → (上限ありなら)上限内優先 → 出力大きい順
   raw.sort((a, b) => {
     if (a.feasible !== b.feasible) return a.feasible ? -1 : 1;
+    if (hasCap && a.overCap !== b.overCap) return a.overCap ? 1 : -1;
     return b.totalKw - a.totalKw;
   });
 
@@ -173,13 +182,25 @@ export function optimizeReplacement(
     const byKw = [...proposals].sort((a, b) => b.totalKw - a.totalKw);
     const byCount = [...proposals].sort((a, b) => b.totalPanels - a.totalPanels);
     const byMargin = [...proposals].sort((a, b) => b.minMarginPct - a.minMarginPct);
-    byKw[0].label = "最大出力";
+    // 上限内で最大の案を強調
+    if (hasCap) {
+      const underCap = [...proposals]
+        .filter((p) => p.feasible && !p.overCap)
+        .sort((a, b) => b.totalKw - a.totalKw);
+      if (underCap[0]) underCap[0].label = "上限内で最大";
+    }
+    if (!byKw[0].label) byKw[0].label = "最大出力";
     if (!byCount[0].label) byCount[0].label = "最大枚数";
     if (!byMargin[0].label) byMargin[0].label = "余裕設置（同寸法寄り）";
     proposals.forEach((p, i) => {
       if (!p.label) p.label = `候補 ${i + 1}`;
       if (!p.feasible) {
         p.notes.push(`${p.infeasibleArrays} 配列はスロットに収まりません（その分は据置）。`);
+      }
+      if (p.overCap) {
+        p.notes.push(
+          `出力上限を ${Math.abs(p.capHeadroomKw ?? 0).toFixed(1)} kW 超過。買取単価区分に注意。`
+        );
       }
       if (p.minMarginPct < 2 && p.feasible) {
         p.notes.push("寸法余裕が小さめ。実機の縁部クランプ位置に注意。");

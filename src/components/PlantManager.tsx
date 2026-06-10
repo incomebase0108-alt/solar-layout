@@ -121,6 +121,21 @@ export function PlantManager({
                 onChange={(e) => updatePlant(current.id, { address: e.target.value })}
               />
             </div>
+            <div className="field">
+              <label>パネル出力上限 (kW)</label>
+              <input
+                type="number"
+                step="0.1"
+                placeholder="上限なし"
+                value={current.outputCapKw ?? ""}
+                onChange={(e) =>
+                  updatePlant(current.id, {
+                    outputCapKw: e.target.value === "" ? null : Number(e.target.value),
+                  })
+                }
+              />
+              <div className="hint">FIT買取価格区分の上限。最適化・配線でこれを超えると警告します。</div>
+            </div>
             <div className="field" style={{ gridColumn: "1 / -1" }}>
               <label>備考（連系容量・系統など）</label>
               <input

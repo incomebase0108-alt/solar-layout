@@ -25,9 +25,13 @@ export function Optimizer({ plant, panels }: Props) {
       panels,
       candidates,
       tolerancePct,
-      5
+      5,
+      plant.outputCapKw ?? null
     );
-  }, [plant.layout.arrays, panels, basePanel, tolerancePct, onlySimilar]);
+  }, [plant.layout.arrays, panels, basePanel, tolerancePct, onlySimilar, plant.outputCapKw]);
+
+  const cap = plant.outputCapKw ?? null;
+  const hasCap = cap != null && cap > 0;
 
   if (plant.layout.arrays.length === 0) {
     return (
@@ -88,6 +92,15 @@ export function Optimizer({ plant, panels }: Props) {
             <div className="label">現状 総出力</div>
             <div className="value">{current.currentKw.toFixed(1)}<small> kW</small></div>
           </div>
+          <div className="metric">
+            <div className="label">パネル出力上限</div>
+            <div className="value">
+              {hasCap ? cap!.toFixed(1) : "—"}<small> kW</small>
+            </div>
+            <div className="hint">
+              {hasCap ? "この値を超えると警告" : "発電所タブで設定可"}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -126,7 +139,13 @@ export function Optimizer({ plant, panels }: Props) {
                   <td>{p.orientation === "portrait" ? "縦" : "横"}</td>
                   <td className="num">{p.newPanels}</td>
                   <td className="num">{p.keptPanels}</td>
-                  <td className="num">{p.totalKw.toFixed(1)} kW</td>
+                  <td className="num" style={{ color: p.overCap ? "var(--danger)" : undefined }}>
+                    {p.totalKw.toFixed(1)} kW
+                    {p.overCap && <div className="hint" style={{ color: "var(--danger)" }}>上限超過</div>}
+                    {hasCap && !p.overCap && p.capHeadroomKw != null && (
+                      <div className="hint">余裕 {p.capHeadroomKw.toFixed(1)}</div>
+                    )}
+                  </td>
                   <td className="num" style={{ color: p.deltaKw >= 0 ? "var(--accent-2)" : "var(--danger)" }}>
                     {p.deltaKw >= 0 ? "+" : ""}{p.deltaKw.toFixed(1)} kW
                   </td>
