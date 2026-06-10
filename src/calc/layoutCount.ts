@@ -1,4 +1,5 @@
 import type { LayoutProject, PanelArray, PanelSpec, LayoutSummary } from "../types";
+import { cellKey } from "../types";
 
 /**
  * 枚数の数え方。
@@ -38,7 +39,29 @@ export function summarizeLayout(
     const cur = byModel.get(model) ?? { count: 0, kw: 0 };
     byModel.set(model, { count: cur.count + count, kw: cur.kw + kw });
   };
-  for (const a of layout.arrays) add(a.panelId, arrayCountByMode(a, mode));
+  for (const a of layout.arrays) {
+    const overrides = a.cellPanels;
+    if (!overrides || Object.keys(overrides).length === 0) {
+      add(a.panelId, arrayCountByMode(a, mode));
+      continue;
+    }
+    // セルごとにパネル型式が混在する配列は1セルずつ数える
+    const keep = new Set(a.keepCells ?? []);
+    const removed = new Set(a.removedCells ?? []);
+    const hasKeep = keep.size > 0;
+    for (let r = 0; r < a.rows; r++) {
+      for (let c = 0; c < a.cols; c++) {
+        const k = cellKey(r, c);
+        let counted: boolean;
+        if (mode === "genkyo") {
+          counted = hasKeep; // 現況＝既存配列の満数（撤去前）
+        } else {
+          counted = removed.has(k) ? false : hasKeep ? keep.has(k) : true;
+        }
+        if (counted) add(overrides[k] ?? a.panelId, 1);
+      }
+    }
+  }
   // 単独パネルは「新設」扱い：改修案のみ加算。
   if (mode === "kaishu") for (const f of layout.freePanels ?? []) add(f.panelId, 1);
 

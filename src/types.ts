@@ -68,6 +68,13 @@ export interface PcsSpec {
   // --- DC 入力側 ---
   /** MPPT 回路数 */
   mpptCount: number;
+  /**
+   * マルチMPPT（独立MPPT）機能の有無。
+   * true=各MPPTが独立追従＝入力ごとに別パネル/別枚数でも可。
+   * false=非独立＝全ストリングを同一パネル・同一直列数にしないと非効率。
+   * 未指定は true 扱い。
+   */
+  multiMppt?: boolean;
   /** 1 MPPT あたりの最大入力（並列）数 */
   stringsPerMppt: number;
   /** 最大入力電圧 Vdc,max (V) — これを超えてはならない上限 */
@@ -153,6 +160,11 @@ export interface PanelArray {
    * フェンス離隔などで取り外した位置。枚数にカウントしない。
    */
   removedCells?: string[];
+  /**
+   * セルごとのパネル型式上書き。"行,列" → panelId。
+   * 同サイズの別機種が1枚ずつ混在する場合に使う。未指定セルは panelId を使う。
+   */
+  cellPanels?: Record<string, string>;
 }
 
 /**
@@ -190,6 +202,13 @@ export interface ShadowZone {
   w: number;
   h: number;
   label?: string;
+}
+
+/** 結線図の手編集による上書き（セルを指定の PC-ストリング-並列 に固定）。 */
+export interface WiringOverride {
+  pcsNo: number;
+  stringNo: number;
+  parallelNo: number;
 }
 
 /**
@@ -244,6 +263,10 @@ export interface LayoutProject {
   baseline?: LayoutBaseline | null;
   /** 図面の凡例・状況説明（任意）。写真の下に表示。 */
   legend?: LegendItem[];
+  /** 結線図の手編集上書き（任意）。key=`${arrayId}:${r},${c}`。 */
+  wiringOverrides?: Record<string, WiringOverride>;
+  /** 現状を手入力で登録する場合のパネル一覧（任意）。複雑な発電所でレイアウト省略用。 */
+  manualCurrent?: { id: string; panelId: string; count: number }[];
 }
 
 export const EMPTY_LAYOUT: LayoutProject = {
@@ -299,6 +322,8 @@ export interface PowerPlant {
   id: string;
   /** 発電所名 */
   name: string;
+  /** 顧客名 */
+  customerName?: string;
   /** 所在地 */
   address?: string;
   /** 連系容量などの備考 */
@@ -371,8 +396,10 @@ export const EMPTY_WIRING: WiringPlan = {
 //   値は編集前提の目安プレースホルダ。
 // ============================================================
 export interface CostRates {
-  /** 既設パネル撤去 (円/枚) */
+  /** 既設パネル撤去（取り外し工事, 円/枚）。処分/在庫とも共通でかかる。 */
   panelRemovalYen: number;
+  /** 既設パネル処分費 (円/枚)。処分に回す分だけにかかる（在庫は不要）。 */
+  panelDisposalYen: number;
   /** 新パネル設置工事 (円/枚) */
   panelInstallYen: number;
   /** 既設パワコン撤去 (円/台) */
@@ -385,6 +412,7 @@ export interface CostRates {
 
 export const DEFAULT_COST_RATES: CostRates = {
   panelRemovalYen: 3000,
+  panelDisposalYen: 2000,
   panelInstallYen: 8000,
   pcsRemovalYen: 15000,
   pcsInstallYen: 30000,

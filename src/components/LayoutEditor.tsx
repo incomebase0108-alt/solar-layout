@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useRef, useState } from "react";
-import type { PanelSpec, LayoutProject, PanelArray, ShadowZone, FreePanel, LegendItem } from "../types";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PanelSpec, LayoutProject, PanelArray, ShadowZone, FreePanel, LegendItem, PcsUnitLine } from "../types";
 import { cellKey, arrayGaps } from "../types";
 import { shadedCellKeys, pointInZones } from "../calc/shadow";
 import { summarizeLayout } from "../calc/layoutCount";
+import { assignWiring, type WiringAssignResult } from "../calc/wiringAssign";
 import { fileToScaledDataUrl } from "../utils/image";
 import { geocodeAddress, buildSeamlessPhoto, calibrationFromScale } from "../utils/gsiMap";
 import { uid } from "../store";
@@ -15,6 +16,8 @@ interface Props {
   patch: (p: Partial<LayoutProject>) => void;
   /** 発電所の住所（住所→地図の初期値） */
   defaultAddress?: string;
+  /** パワコン構成（結線図の割付に使用） */
+  pcsUnits?: PcsUnitLine[];
 }
 
 interface View {
@@ -32,7 +35,7 @@ function normalizeDeg(d: number): number {
   return x;
 }
 
-export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }: Props) {
+export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, pcsUnits }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgReady, setImgReady] = useState(false);
@@ -53,9 +56,56 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
     if (prev) rawPatch(prev); // 履歴に積まずに丸ごと復元
   }
   const [view, setView] = useState<View>({ tx: 40, ty: 40, zoom: 0.5 });
-  const [mode, setMode] = useState<"pan" | "calibrate" | "select" | "shadow" | "remove" | "scan" | "keeprect">("pan");
+  const [mode, setMode] = useState<"pan" | "calibrate" | "select" | "shadow" | "remove" | "scan" | "keeprect" | "removerect" | "cellpanel">("pan");
+  // セル単位でパネル型式を変更するときの割り当て先パネルid
+  const [cellPanelTarget, setCellPanelTarget] = useState(() => panels[0]?.id ?? "");
   // 範囲ドラッグで流用/入換を一括指定するときの値（true=流用にする, false=入換にする）
   const [keepRectValue, setKeepRectValue] = useState(true);
+  // 範囲ドラッグで撤去/復活するときの値（true=撤去する, false=戻す）
+  const [removeRectValue, setRemoveRectValue] = useState(true);
+  // 現状手入力の登録確認メッセージ
+  const [manualMsg, setManualMsg] = useState<string | null>(null);
+  // 結線表示モード（パワコン構成からストリングを自動割付して色＋番号で描画）
+  const [wireMode, setWireMode] = useState(false);
+  // 結線の手編集：true=クリックで上書き割付, 値は割付先
+  const [wireEdit, setWireEdit] = useState(false);
+  const [editPc, setEditPc] = useState(1);
+  const [editStr, setEditStr] = useState(1);
+  const [editPar, setEditPar] = useState(1);
+  // 結線編集専用のUndo/Redo（全体の戻すとは独立）。クリック位置にボタンを出す。
+  const wireUndoRef = useRef<Record<string, { pcsNo: number; stringNo: number; parallelNo: number }>[]>([]);
+  const wireRedoRef = useRef<Record<string, { pcsNo: number; stringNo: number; parallelNo: number }>[]>([]);
+  const [wireHist, setWireHist] = useState(0); // ボタン活性の再描画用
+  const [wirePopPos, setWirePopPos] = useState<{ x: number; y: number } | null>(null);
+
+  /** 結線上書きを更新（全体履歴には積まず、結線専用履歴で管理）。 */
+  function setWiringOverrides(next: Record<string, { pcsNo: number; stringNo: number; parallelNo: number }>, record = true) {
+    if (record) {
+      wireUndoRef.current.push(layout.wiringOverrides ?? {});
+      if (wireUndoRef.current.length > 100) wireUndoRef.current.shift();
+      wireRedoRef.current = [];
+    }
+    setWireHist((h) => h + 1);
+    rawPatch({ wiringOverrides: next });
+  }
+  function wireUndo() {
+    if (!wireUndoRef.current.length) return;
+    const prev = wireUndoRef.current.pop()!;
+    wireRedoRef.current.push(layout.wiringOverrides ?? {});
+    setWireHist((h) => h + 1);
+    rawPatch({ wiringOverrides: prev });
+  }
+  function wireRedo() {
+    if (!wireRedoRef.current.length) return;
+    const next = wireRedoRef.current.pop()!;
+    wireUndoRef.current.push(layout.wiringOverrides ?? {});
+    setWireHist((h) => h + 1);
+    rawPatch({ wiringOverrides: next });
+  }
+  const wiring: WiringAssignResult | null = useMemo(
+    () => (wireMode ? assignWiring(layout, panels, pcsUnits ?? [], layout.wiringOverrides) : null),
+    [wireMode, layout, panels, pcsUnits]
+  );
 
   // 住所 → 地理院タイル取得
   const [address, setAddress] = useState(defaultAddress ?? "");
@@ -91,7 +141,9 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
     img.onload = () => {
       imgRef.current = img;
       setImgReady(true);
-      fitToView(img);
+      // パネルがあればその範囲に最大ズーム、無ければ写真全体
+      if (layout.arrays.length > 0 || (layout.freePanels?.length ?? 0) > 0) fitToPanels();
+      else fitToView(img);
     };
     img.src = layout.imageDataUrl;
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -107,6 +159,49 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
       zoom,
     });
   }, []);
+
+  /** パネル設置範囲（配列＋単独パネル）に最大ズームして中央表示。パネルが無ければ全体表示。 */
+  function fitToPanels() {
+    const c = canvasRef.current;
+    if (!c) return;
+    const pts: { x: number; y: number }[] = [];
+    for (const a of layout.arrays) {
+      const { pw, ph, gapXpx, gapYpx } = arrayPanelPx(a);
+      const tW = a.cols * pw + (a.cols - 1) * gapXpx;
+      const tH = a.rows * ph + (a.rows - 1) * gapYpx;
+      const ar = (a.rotationDeg * Math.PI) / 180;
+      const cs = Math.cos(ar);
+      const sn = Math.sin(ar);
+      for (const [lx, ly] of [[0, 0], [tW, 0], [0, tH], [tW, tH]] as const) {
+        pts.push({ x: a.posXpx + cs * lx - sn * ly, y: a.posYpx + sn * lx + cs * ly });
+      }
+    }
+    for (const f of layout.freePanels ?? []) {
+      const { pw, ph } = freePanelPx(f);
+      const rad = Math.max(pw, ph) / 2;
+      pts.push({ x: f.posXpx - rad, y: f.posYpx - rad }, { x: f.posXpx + rad, y: f.posYpx + rad });
+    }
+    if (pts.length === 0) {
+      if (imgRef.current) fitToView(imgRef.current);
+      return;
+    }
+    // 表示フレーム（回転後）でのバウンディングボックスを求める
+    const cs = Math.cos(rot);
+    const sn = Math.sin(rot);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of pts) {
+      const qx = cs * p.x - sn * p.y;
+      const qy = sn * p.x + cs * p.y;
+      minX = Math.min(minX, qx); maxX = Math.max(maxX, qx);
+      minY = Math.min(minY, qy); maxY = Math.max(maxY, qy);
+    }
+    const bw = maxX - minX || 1;
+    const bh = maxY - minY || 1;
+    const zoom = Math.max(0.05, Math.min(8, Math.min(c.width / bw, c.height / bh) * 0.85));
+    const cx = (minX + maxX) / 2;
+    const cy = (minY + maxY) / 2;
+    setView({ tx: c.width / 2 - zoom * cx, ty: c.height / 2 - zoom * cy, zoom });
+  }
 
   // --- 座標変換 ---
   const screenToImage = useCallback(
@@ -218,6 +313,51 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
             ctx.setLineDash([]);
             continue;
           }
+          // --- 結線表示モード：パワコン別に色分け＋「PC番号-ストリング番号」 ---
+          if (wiring) {
+            const ckey = `${arr.id}:${r},${col}`;
+            // 改修案の対象外（入換で撤去・置換される既存セル）は薄い破線枠のみ
+            if (!wiring.targetCells.has(ckey)) {
+              ctx.strokeStyle = "#334155";
+              ctx.lineWidth = 1 / view.zoom;
+              ctx.setLineDash([3 / view.zoom, 3 / view.zoom]);
+              ctx.strokeRect(x, y, pw, ph);
+              ctx.setLineDash([]);
+              continue;
+            }
+            const as = wiring.byCell.get(ckey);
+            if (as) {
+              ctx.fillStyle = as.color + "cc";
+              ctx.strokeStyle = "#0b1220";
+              ctx.lineWidth = 1 / view.zoom;
+              ctx.fillRect(x, y, pw, ph);
+              ctx.strokeRect(x, y, pw, ph);
+              if (shaded.has(cellKey(r, col))) {
+                ctx.fillStyle = "rgba(15,23,42,0.35)";
+                ctx.fillRect(x, y, pw, ph);
+              }
+              // ラベル「PC番号-ストリング番号-並列番号」（セルに合わせて文字サイズ）
+              const label = `${as.pcsNo}-${as.stringNo}-${as.parallelNo}`;
+              const fs = Math.min(ph * 0.4, (pw * 0.9) / Math.max(3, label.length * 0.55));
+              if (fs * view.zoom >= 4) {
+                ctx.fillStyle = "#0b1220";
+                ctx.font = `bold ${fs}px sans-serif`;
+                ctx.textAlign = "center";
+                ctx.textBaseline = "middle";
+                ctx.fillText(label, x + pw / 2, y + ph / 2);
+                ctx.textAlign = "start";
+                ctx.textBaseline = "alphabetic";
+              }
+            } else {
+              // 改修案だがストリング未割付（パワコン構成の枚数不足）＝空き枠
+              ctx.fillStyle = "rgba(148,163,184,0.18)";
+              ctx.strokeStyle = "#475569";
+              ctx.lineWidth = 1 / view.zoom;
+              ctx.fillRect(x, y, pw, ph);
+              ctx.strokeRect(x, y, pw, ph);
+            }
+            continue;
+          }
           const isKeep = keep.has(cellKey(r, col));
           ctx.fillStyle = (isKeep ? KEEP_COLOR : arr.color) + (isKeep ? "66" : "44");
           ctx.strokeStyle = isKeep ? KEEP_COLOR : selected ? "#fff" : arr.color;
@@ -228,6 +368,24 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
           if (shaded.has(cellKey(r, col))) {
             ctx.fillStyle = "rgba(15,23,42,0.55)";
             ctx.fillRect(x, y, pw, ph);
+          }
+          // 混在（別型式に上書きしたセル）：橙の縁＋W値を表示
+          const ovId = arr.cellPanels?.[cellKey(r, col)];
+          if (ovId && ovId !== arr.panelId) {
+            const op = panels.find((p) => p.id === ovId);
+            ctx.strokeStyle = "#f59e0b";
+            ctx.lineWidth = 2 / view.zoom;
+            ctx.strokeRect(x + 1 / view.zoom, y + 1 / view.zoom, pw - 2 / view.zoom, ph - 2 / view.zoom);
+            const fs = Math.min(ph * 0.42, pw * 0.42);
+            if (op && fs * view.zoom >= 5) {
+              ctx.fillStyle = "#f59e0b";
+              ctx.font = `bold ${fs}px sans-serif`;
+              ctx.textAlign = "center";
+              ctx.textBaseline = "middle";
+              ctx.fillText(String(op.pmaxW), x + pw / 2, y + ph / 2);
+              ctx.textAlign = "start";
+              ctx.textBaseline = "alphabetic";
+            }
           }
         }
       }
@@ -312,7 +470,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
       ctx.strokeRect(scanDraft.x, scanDraft.y, scanDraft.w, scanDraft.h);
       ctx.setLineDash([]);
     }
-  }, [view, rot, layout, selectedId, selectedFreeId, calibPts, shadowDraft, scanDraft, arrayPanelPx, freePanelPx]);
+  }, [view, rot, layout, selectedId, selectedFreeId, calibPts, shadowDraft, scanDraft, wiring, arrayPanelPx, freePanelPx]);
 
   useEffect(() => {
     draw();
@@ -434,6 +592,17 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
     });
   }
 
+  /** セルのパネル型式を割り当てる。配列の既定型式と同じなら上書きを解除。 */
+  function setCellPanel(arr: PanelArray, r: number, col: number, panelId: string) {
+    const key = cellKey(r, col);
+    const cp = { ...(arr.cellPanels ?? {}) };
+    if (panelId === arr.panelId) delete cp[key];
+    else cp[key] = panelId;
+    patch({
+      arrays: layout.arrays.map((a) => (a.id === arr.id ? { ...a, cellPanels: cp } : a)),
+    });
+  }
+
   function setAllCells(arrId: string, keepAll: boolean) {
     patch({
       arrays: layout.arrays.map((a) => {
@@ -469,13 +638,29 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
 
+    // 結線の手編集：パネルをクリックで選択中の PC-ストリング-並列 に上書き割付
+    if (wireMode && wireEdit) {
+      setWirePopPos({ x: sx, y: sy }); // 戻す/進めるボタンをこの位置に出す
+      const img = screenToImage(sx, sy);
+      const cell = hitCell(img.x, img.y);
+      if (cell && wiring) {
+        const key = `${cell.arr.id}:${cell.r},${cell.col}`;
+        if (wiring.targetCells.has(key)) {
+          const ov = { ...(layout.wiringOverrides ?? {}) };
+          ov[key] = { pcsNo: editPc, stringNo: editStr, parallelNo: editPar };
+          setWiringOverrides(ov);
+        }
+      }
+      return;
+    }
+
     if (mode === "shadow") {
       shadowStartRef.current = screenToImage(sx, sy);
       return;
     }
 
-    if (mode === "scan" || mode === "keeprect") {
-      // 画面座標で記録（回転後の見た目に沿って囲む）。scan と 範囲流用 で共用。
+    if (mode === "scan" || mode === "keeprect" || mode === "removerect") {
+      // 画面座標で記録（回転後の見た目に沿って囲む）。scan/範囲流用/範囲撤去 で共用。
       scanStartRef.current = { sx, sy };
       return;
     }
@@ -496,6 +681,16 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
       if (cell) {
         setSelectedId(cell.arr.id);
         toggleRemove(cell.arr, cell.r, cell.col);
+      }
+      return;
+    }
+
+    if (mode === "cellpanel") {
+      const img = screenToImage(sx, sy);
+      const cell = hitCell(img.x, img.y);
+      if (cell && cellPanelTarget) {
+        setSelectedId(cell.arr.id);
+        setCellPanel(cell.arr, cell.r, cell.col, cellPanelTarget);
       }
       return;
     }
@@ -569,8 +764,8 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
       return;
     }
 
-    // スキャン／範囲流用のドラッグ矩形描画（画面座標＝回転後の見た目に沿う）
-    if ((mode === "scan" || mode === "keeprect") && scanStartRef.current) {
+    // スキャン／範囲流用／範囲撤去のドラッグ矩形描画（画面座標＝回転後の見た目に沿う）
+    if ((mode === "scan" || mode === "keeprect" || mode === "removerect") && scanStartRef.current) {
       const s = scanStartRef.current;
       setScanDraft({
         x: Math.min(s.sx, sx),
@@ -628,15 +823,49 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
       }
       setShadowDraft(null);
     }
-    // スキャン／範囲流用：画面で囲んだ範囲を確定
-    if ((mode === "scan" || mode === "keeprect") && scanStartRef.current) {
+    // スキャン／範囲流用／範囲撤去：画面で囲んだ範囲を確定
+    if ((mode === "scan" || mode === "keeprect" || mode === "removerect") && scanStartRef.current) {
       scanStartRef.current = null;
       if (scanDraft && scanDraft.w > 4 && scanDraft.h > 4) {
         if (mode === "scan") scanFromScreenRect(scanDraft);
-        else applyKeepRect(scanDraft, keepRectValue);
+        else if (mode === "keeprect") applyKeepRect(scanDraft, keepRectValue);
+        else applyRemoveRect(scanDraft, removeRectValue);
       }
       setScanDraft(null);
     }
+  }
+
+  /**
+   * 画面で囲んだ範囲内のセルをまとめて撤去/復活する。
+   * value=true で撤去（空き枠）、false で復活。不定形・三角の削り出しに使う。
+   */
+  function applyRemoveRect(r: { x: number; y: number; w: number; h: number }, value: boolean) {
+    const x2 = r.x + r.w;
+    const y2 = r.y + r.h;
+    const arrays = layout.arrays.map((arr) => {
+      const dims = arrayPanelPx(arr);
+      const { pw, ph, gapXpx, gapYpx } = dims;
+      const a = (arr.rotationDeg * Math.PI) / 180;
+      const cos = Math.cos(a);
+      const sin = Math.sin(a);
+      const removed = new Set(arr.removedCells ?? []);
+      for (let row = 0; row < arr.rows; row++) {
+        for (let col = 0; col < arr.cols; col++) {
+          const lx = col * (pw + gapXpx) + pw / 2;
+          const ly = row * (ph + gapYpx) + ph / 2;
+          const ix = arr.posXpx + cos * lx - sin * ly;
+          const iy = arr.posYpx + sin * lx + cos * ly;
+          const s = imageToScreen(ix, iy);
+          if (s.x >= r.x && s.x <= x2 && s.y >= r.y && s.y <= y2) {
+            const k = cellKey(row, col);
+            if (value) removed.add(k);
+            else removed.delete(k);
+          }
+        }
+      }
+      return { ...arr, removedCells: [...removed] };
+    });
+    patch({ arrays });
   }
 
   /**
@@ -857,6 +1086,52 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
     a.click();
   }
 
+  /** 結線図（写真＝キャンバス部分だけ）を別ウィンドウでPDF印刷する。 */
+  function exportCanvasPdf() {
+    const c = canvasRef.current;
+    if (!c) return;
+    draw();
+    const url = c.toDataURL("image/png");
+    const esc = (s: string) =>
+      s.replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]!));
+    const pcsRows = wiring
+      ? wiring.perPcs
+          .map(
+            (p) =>
+              `<span style="display:inline-flex;align-items:center;margin:0 12px 4px 0"><span style="width:12px;height:12px;background:${p.color};border-radius:2px;margin-right:5px"></span>PC${p.pcsNo}：${p.panels}枚／${p.strings}str</span>`
+          )
+          .join("")
+      : "";
+    const legendRows = legend
+      .map(
+        (l) =>
+          `<div style="margin:2px 0"><span style="display:inline-block;width:12px;height:12px;background:${l.color};border-radius:2px;margin-right:6px;vertical-align:middle"></span>${esc(l.label)}</div>`
+      )
+      .join("");
+    const w = window.open("", "_blank");
+    if (!w) {
+      alert("ポップアップがブロックされました。許可してから再実行してください。");
+      return;
+    }
+    w.document.write(
+      `<!DOCTYPE html><html><head><meta charset="utf-8"><title>結線図</title>
+<style>@page{size:A4 landscape;margin:8mm} body{font-family:sans-serif;margin:0;padding:6mm;color:#0b1220}
+img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-top:6px}</style></head>
+<body><img src="${url}"/>
+<div class="row">${pcsRows}</div>
+<div class="row">${legendRows}</div>
+<script>window.onload=function(){setTimeout(function(){window.print();},350);};</script>
+</body></html>`
+    );
+    w.document.close();
+  }
+
+  function clearWiringOverrides() {
+    if (!layout.wiringOverrides || Object.keys(layout.wiringOverrides).length === 0) return;
+    if (!confirm("結線の手編集をすべて消して自動割付に戻します。よろしいですか？")) return;
+    setWiringOverrides({});
+  }
+
   function addArray() {
     if (!formPanelId) {
       alert("パネルを登録・選択してください");
@@ -962,9 +1237,11 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
 
   /** いまの構成を「現状（基準）」として凍結保存する（現況＝既存配列の全数）。 */
   function registerBaseline() {
-    const sum = summarizeLayout(layout, panels, "genkyo");
+    // 流用マークのある配列＝既存。無ければ図面の全パネルを現状として登録する。
+    let sum = summarizeLayout(layout, panels, "genkyo");
+    if (sum.totalPanels === 0) sum = summarizeLayout(layout, panels, "kaishu");
     if (sum.totalPanels === 0) {
-      alert("現況の既存パネルがありません。配列に『流用』を指定してから登録してください（流用マークのある配列＝既存と判定します）。");
+      alert("配置がありません。図面にパネルを置くか、下の「現状を手入力」で入力してください。");
       return;
     }
     if (
@@ -973,6 +1250,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
     )
       return;
     patch({ baseline: { ...sum, registeredAt: Date.now() } });
+    setManualMsg(`✓ 現状を基準として登録しました（${sum.totalPanels.toLocaleString()}枚・${sum.totalKw.toFixed(1)}kW）`);
   }
 
   function clearBaseline() {
@@ -1033,6 +1311,48 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
   function removeLegend(id: string) {
     patch({ legend: legend.filter((l) => l.id !== id) });
   }
+
+  // --- 現状の手入力（レイアウト不要・複雑な発電所向け） ---
+  const manualCurrent = layout.manualCurrent ?? [];
+  function addManualLine() {
+    setManualMsg(null);
+    patch({ manualCurrent: [...manualCurrent, { id: uid("mc"), panelId: panels[0]?.id ?? "", count: 0 }] });
+  }
+  function updateManualLine(id: string, p: Partial<{ panelId: string; count: number }>) {
+    setManualMsg(null);
+    patch({ manualCurrent: manualCurrent.map((m) => (m.id === id ? { ...m, ...p } : m)) });
+  }
+  function removeManualLine(id: string) {
+    setManualMsg(null);
+    patch({ manualCurrent: manualCurrent.filter((m) => m.id !== id) });
+  }
+  /** 手入力の現状を「基準（現況）」として登録する。 */
+  function registerBaselineFromManual() {
+    const byModel = new Map<string, { count: number; kw: number }>();
+    for (const m of manualCurrent) {
+      if (m.count <= 0) continue;
+      const p = panels.find((x) => x.id === m.panelId);
+      const model = p ? `${p.maker} ${p.model}` : "未登録パネル";
+      const kw = (m.count * (p?.pmaxW ?? 0)) / 1000;
+      const cur = byModel.get(model) ?? { count: 0, kw: 0 };
+      byModel.set(model, { count: cur.count + m.count, kw: cur.kw + kw });
+    }
+    const byPanel = [...byModel.entries()].map(([model, v]) => ({ model, count: v.count, kw: v.kw }));
+    const totalPanels = byPanel.reduce((s, b) => s + b.count, 0);
+    if (totalPanels === 0) {
+      alert("枚数を入力してください。");
+      return;
+    }
+    const totalKw = byPanel.reduce((s, b) => s + b.kw, 0);
+    if (layout.baseline && !confirm("既に基準が登録されています。手入力の内容で上書きしますか？")) return;
+    patch({ baseline: { totalPanels, totalKw, byPanel, registeredAt: Date.now() } });
+    setManualMsg(`✓ 現状を基準として登録しました（${totalPanels.toLocaleString()}枚・${totalKw.toFixed(1)}kW）`);
+  }
+  const manualTotal = manualCurrent.reduce((s, m) => s + (m.count || 0), 0);
+  const manualKw = manualCurrent.reduce((s, m) => {
+    const p = panels.find((x) => x.id === m.panelId);
+    return s + ((m.count || 0) * (p?.pmaxW ?? 0)) / 1000;
+  }, 0);
 
   function setAllPlant(keepAll: boolean) {
     patch({
@@ -1212,16 +1532,29 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
               </span>
             </div>
 
-            <h3>パネルの撤去（フェンス離隔など）</h3>
+            <h3>パネルの撤去（フェンス離隔・不定形/三角の削り出し）</h3>
             <div className="row">
               <button
                 className={`btn small ${mode === "remove" ? "" : "secondary"}`}
                 onClick={() => setMode(mode === "remove" ? "pan" : "remove")}
               >
-                {mode === "remove" ? "撤去モード：パネルをクリックで撤去/復活" : "パネルを撤去/復活"}
+                {mode === "remove" ? "撤去モード：クリックで撤去/復活" : "1枚ずつ撤去/復活"}
+              </button>
+              <button
+                className={`btn small ${mode === "removerect" && removeRectValue ? "" : "secondary"}`}
+                onClick={() => { setRemoveRectValue(true); setMode(mode === "removerect" && removeRectValue ? "pan" : "removerect"); }}
+              >
+                {mode === "removerect" && removeRectValue ? "範囲撤去中：ドラッグで囲む" : "▦ 範囲を撤去（ドラッグ）"}
+              </button>
+              <button
+                className={`btn small ${mode === "removerect" && !removeRectValue ? "" : "secondary"}`}
+                onClick={() => { setRemoveRectValue(false); setMode(mode === "removerect" && !removeRectValue ? "pan" : "removerect"); }}
+              >
+                {mode === "removerect" && !removeRectValue ? "範囲復活中：ドラッグで囲む" : "▦ 範囲を戻す（ドラッグ）"}
               </button>
               <span className="hint">
-                クリックでそのパネルを取り外し（破線の空き枠）。もう一度で復活。撤去分は枚数から除外。
+                クリックで1枚ずつ、または<strong>範囲ドラッグでまとめて</strong>撤去（破線の空き枠）。
+                長方形を置いて要らない部分を範囲撤去すれば<strong>三角・L字・不定形</strong>が作れます。撤去分は枚数から除外。
               </span>
             </div>
 
@@ -1255,11 +1588,83 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
         )}
       </div>
 
+      {/* 現状を手入力で登録（レイアウト＝配列が無い複雑な発電所向け。図面がある時は前後比較カードで登録するため非表示） */}
+      {layout.arrays.length === 0 && (
+      <div className="card">
+        <div className="row">
+          <h2 style={{ margin: 0 }}>現状を手入力で登録・編集（レイアウト不要）</h2>
+          <span className="spacer" />
+          <button className="btn secondary small" onClick={addManualLine} disabled={panels.length === 0}>＋ 型式を追加</button>
+        </div>
+        <div className="hint" style={{ marginTop: 4 }}>
+          図面を作らない複雑な発電所向け。現状のパネルを<strong>型式＋枚数で入力・編集</strong>して「現状を基準登録」できます。
+          概算コストの撤去枚数にも使えます。（図面を配置した場合はこのカードは消え、「前後比較」の登録ボタンを使います）
+        </div>
+        {manualCurrent.length > 0 && (
+          <table className="list" style={{ marginTop: 8 }}>
+            <thead>
+              <tr><th>パネル型式</th><th className="num">W</th><th className="num">枚数</th><th className="num">出力(kW)</th><th></th></tr>
+            </thead>
+            <tbody>
+              {manualCurrent.map((m) => {
+                const p = panels.find((x) => x.id === m.panelId);
+                return (
+                  <tr key={m.id}>
+                    <td>
+                      <select value={m.panelId} onChange={(e) => updateManualLine(m.id, { panelId: e.target.value })}>
+                        {panels.map((pp) => (<option key={pp.id} value={pp.id}>{pp.maker} {pp.model}（{pp.pmaxW}W）</option>))}
+                      </select>
+                    </td>
+                    <td className="num">{p?.pmaxW ?? "—"}</td>
+                    <td className="num">
+                      <input type="number" min={0} style={{ width: 90 }} value={m.count} onChange={(e) => updateManualLine(m.id, { count: Number(e.target.value) || 0 })} />
+                    </td>
+                    <td className="num">{(((m.count || 0) * (p?.pmaxW ?? 0)) / 1000).toFixed(1)}</td>
+                    <td className="num"><button className="btn danger small" onClick={() => removeManualLine(m.id)}>×</button></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+            <tfoot>
+              <tr><td className="num"><strong>合計</strong></td><td></td><td className="num"><strong>{manualTotal.toLocaleString()} 枚</strong></td><td className="num"><strong>{manualKw.toFixed(1)} kW</strong></td><td></td></tr>
+            </tfoot>
+          </table>
+        )}
+        <div className="row" style={{ marginTop: 8 }}>
+          <button className="btn" onClick={registerBaselineFromManual} disabled={manualTotal === 0}>この内容を現状（基準）として登録</button>
+          {manualMsg ? (
+            <strong style={{ color: "#22c55e" }}>{manualMsg}</strong>
+          ) : (
+            <span className="hint">登録すると下の「前後比較」の現状（基準）に入ります。</span>
+          )}
+        </div>
+        {manualMsg && layout.baseline && (
+          <div
+            className="result-grid"
+            style={{ marginTop: 10, padding: "8px 10px", background: "rgba(34,197,94,0.1)", borderRadius: 8 }}
+          >
+            <div className="metric">
+              <div className="label">登録済み 現状（基準）</div>
+              <div className="value">{layout.baseline.totalPanels.toLocaleString()}<small> 枚</small></div>
+            </div>
+            <div className="metric">
+              <div className="label">現状 合計出力</div>
+              <div className="value">{layout.baseline.totalKw.toFixed(1)}<small> kW</small></div>
+            </div>
+            <div className="metric" style={{ gridColumn: "span 2" }}>
+              <div className="label">型式内訳</div>
+              <div className="hint">{layout.baseline.byPanel.map((b) => `${b.model}：${b.count.toLocaleString()}枚`).join(" / ")}</div>
+            </div>
+          </div>
+        )}
+      </div>
+      )}
+
       {layout.imageDataUrl && (
         <div className="card" style={{ padding: 0, overflow: "hidden", position: "relative" }}>
           <canvas
             ref={canvasRef}
-            style={{ display: "block", width: "100%", cursor: mode === "pan" ? "grab" : "crosshair", touchAction: "none" }}
+            style={{ display: "block", width: "100%", cursor: wireMode && wireEdit ? "crosshair" : mode === "pan" ? "grab" : "crosshair", touchAction: "none" }}
             onMouseDown={onMouseDown}
             onMouseMove={onMouseMove}
             onMouseUp={onMouseUp}
@@ -1300,15 +1705,106 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
             <button className="btn secondary small" title="拡大" onClick={() => zoomByCentered(1.25)}>＋</button>
             <button className="btn secondary small" title="縮小" onClick={() => zoomByCentered(1 / 1.25)}>－</button>
             <button
+              className="btn small"
+              title="パネル設置範囲に最大ズーム"
+              onClick={fitToPanels}
+            >
+              ▣
+            </button>
+            <button
               className="btn secondary small"
-              title="全体表示"
+              title="写真全体を表示"
               onClick={() => imgRef.current && fitToView(imgRef.current)}
             >
               ⤢
             </button>
           </div>
+          {/* 結線編集用の戻す/進める（クリック位置に出る・全体の戻すとは独立） */}
+          {wireMode && wireEdit && (
+            <div
+              data-rev={wireHist}
+              style={{
+                position: "absolute",
+                left: wirePopPos ? Math.max(4, Math.min((canvasRef.current?.clientWidth ?? 600) - 130, wirePopPos.x - 34)) : "50%",
+                top: wirePopPos ? Math.max(4, wirePopPos.y - 46) : 8,
+                transform: wirePopPos ? "none" : "translateX(-50%)",
+                display: "flex",
+                gap: 4,
+                zIndex: 6,
+              }}
+            >
+              <button className="btn small" disabled={wireUndoRef.current.length === 0} onClick={wireUndo} title="結線編集を1つ戻す">↶ 戻す</button>
+              <button className="btn small" disabled={wireRedoRef.current.length === 0} onClick={wireRedo} title="結線編集を1つ進める">↷ 進める</button>
+            </div>
+          )}
           <div className="hint" style={{ padding: "6px 12px" }}>
-            ドラッグ＝移動／ホイール or ＋−ボタン＝ズーム／⤢＝全体表示／↩戻す・🗑全消去／配列をドラッグで位置調整
+            ドラッグ＝移動／ホイール or ＋−ボタン＝ズーム／▣＝パネルに最大化／⤢＝写真全体／↩戻す・🗑全消去／配列をドラッグで位置調整
+          </div>
+
+          {/* 結線図（パワコン構成からストリングを自動割付） */}
+          <div style={{ padding: "8px 12px", borderTop: "1px solid #1e293b" }}>
+            <div className="row" style={{ alignItems: "center", flexWrap: "wrap" }}>
+              <button
+                className={`btn small ${wireMode ? "" : "secondary"}`}
+                onClick={() => { setWireMode(!wireMode); if (wireMode) setWireEdit(false); }}
+              >
+                {wireMode ? "🔌 結線表示：ON" : "🔌 結線図を表示（パワコン割付）"}
+              </button>
+              {wireMode && (
+                <>
+                  <button
+                    className={`btn small ${wireEdit ? "" : "secondary"}`}
+                    onClick={() => setWireEdit(!wireEdit)}
+                  >
+                    {wireEdit ? "✏ 編集中：パネルをクリックで割付" : "✏ 結線を手編集"}
+                  </button>
+                  <button className="btn secondary small no-print" onClick={exportCanvasPdf}>
+                    🖨 結線図をPDF印刷
+                  </button>
+                  {layout.wiringOverrides && Object.keys(layout.wiringOverrides).length > 0 && (
+                    <button className="btn secondary small" onClick={clearWiringOverrides}>
+                      手編集をクリア（{Object.keys(layout.wiringOverrides).length}）
+                    </button>
+                  )}
+                </>
+              )}
+            </div>
+
+            {wireMode && wireEdit && (
+              <div className="row" style={{ marginTop: 6, alignItems: "flex-end", gap: 8, padding: "6px 8px", background: "#0b1220", borderRadius: 8 }}>
+                <div className="field" style={{ width: 90 }}>
+                  <label>PC番号</label>
+                  <input type="number" min={1} value={editPc} onChange={(e) => setEditPc(Math.max(1, Number(e.target.value) || 1))} />
+                </div>
+                <div className="field" style={{ width: 90 }}>
+                  <label>ストリング</label>
+                  <input type="number" min={1} value={editStr} onChange={(e) => setEditStr(Math.max(1, Number(e.target.value) || 1))} />
+                </div>
+                <div className="field" style={{ width: 90 }}>
+                  <label>並列</label>
+                  <input type="number" min={1} value={editPar} onChange={(e) => setEditPar(Math.max(1, Number(e.target.value) || 1))} />
+                </div>
+                <span className="hint" style={{ flex: 1 }}>
+                  上の番号にしたいパネルを<strong>クリック</strong>すると「{editPc}-{editStr}-{editPar}」に割付（色も変わる）。
+                  まとめて消すなら「手編集をクリア」。
+                </span>
+              </div>
+            )}
+            {wireMode && wiring && wiring.perPcs.length > 0 && (
+              <div className="row" style={{ marginTop: 6, gap: 10, flexWrap: "wrap" }}>
+                {wiring.perPcs.map((p) => (
+                  <span key={p.pcsNo} style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>
+                    <span style={{ width: 14, height: 14, borderRadius: 3, background: p.color, display: "inline-block" }} />
+                    <span className="hint">PC{p.pcsNo}：{p.panels}枚／{p.strings}str</span>
+                  </span>
+                ))}
+              </div>
+            )}
+            {wireMode && (pcsUnits?.length ?? 0) === 0 && (
+              <div className="hint" style={{ marginTop: 4, color: "var(--warn)" }}>
+                ⚠ パワコン構成が未設定です。「パワコン構成」タブで台数・ストリングを設定すると結線が描かれます。
+              </div>
+            )}
           </div>
 
           {/* 写真の下：現状の説明・凡例 */}
@@ -1415,6 +1911,28 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
                 行×列を自動計算して配列を生成します。
                 {layout.calibration ? "" : "（先に地理院地図の取得かスケール設定が必要）"}
                 アレイが斜めなら、先に写真を回して水平にしてから囲むと正確です。
+              </span>
+            </div>
+          )}
+
+          {/* 混在パネル：同サイズの別機種が1枚ずつ混ざる配列を、セルごとに型式変更 */}
+          {panels.length > 0 && (
+            <div className="row" style={{ marginTop: 6, padding: "8px 10px", background: "#0b1220", borderRadius: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
+              <button
+                className={`btn small ${mode === "cellpanel" ? "" : "secondary"}`}
+                onClick={() => setMode(mode === "cellpanel" ? "pan" : "cellpanel")}
+              >
+                {mode === "cellpanel" ? "混在編集中：セルをクリックで型式変更" : "▦ 混在パネル（セルごとに型式変更）"}
+              </button>
+              <div className="field" style={{ minWidth: 220 }}>
+                <label>割り当てる型式</label>
+                <select value={cellPanelTarget} onChange={(e) => setCellPanelTarget(e.target.value)}>
+                  {panels.map((p) => (<option key={p.id} value={p.id}>{p.maker} {p.model}（{p.pmaxW}W）</option>))}
+                </select>
+              </div>
+              <span className="hint" style={{ flex: 1 }}>
+                同サイズの別機種が混ざる配列で、<strong>セルをクリック</strong>して型式を切替（橙枠＋W値表示）。
+                配列の既定型式に戻すと枠が消えます。枚数・kW・コストは<strong>型式ごとに自動集計</strong>。
               </span>
             </div>
           )}
@@ -1572,7 +2090,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
         </div>
       )}
 
-      {layout.imageDataUrl && (
+      {(layout.imageDataUrl || layout.baseline || manualCurrent.length > 0 || layout.arrays.length > 0) && (
         <div className="card">
           <h2>現状の基準登録 ＆ 前後比較</h2>
           <div className="row">
@@ -1582,10 +2100,14 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress }
             {layout.baseline && (
               <button className="btn secondary small" onClick={clearBaseline}>基準を削除</button>
             )}
-            <span className="hint">
-              <strong>現状（基準）＝流用マークのある既存配列の全数</strong>（新設パネルは除外）。
-              <strong>改修案＝既存は流用枚数＋新設パネル</strong>で計算します。
-            </span>
+            {manualMsg ? (
+              <strong style={{ color: "#22c55e" }}>{manualMsg}</strong>
+            ) : (
+              <span className="hint">
+                <strong>現状（基準）＝流用マークのある既存配列の全数</strong>（新設パネルは除外）。
+                <strong>改修案＝既存は流用枚数＋新設パネル</strong>で計算します。
+              </span>
+            )}
           </div>
 
           {(() => {

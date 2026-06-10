@@ -90,8 +90,128 @@ const SEED_PANELS: PanelSpec[] = [
     tempCoeffPmaxPctPerC: -0.29,
     note: "候補（700W両面・N型TOPCon。2384×1303mmの大判=要再架台）",
   },
+  {
+    id: "sanix_srm296p_72n",
+    maker: "SANIX",
+    model: "SRM296P-72N",
+    lengthMm: 1957,
+    widthMm: 992,
+    thicknessMm: 50,
+    weightKg: 23,
+    pmaxW: 296,
+    vmpV: 36.6,
+    impA: 8.09,
+    vocV: 45.4,
+    iscA: 8.74,
+    tempCoeffVocPctPerC: -0.383,
+    tempCoeffPmaxPctPerC: -0.5094,
+    note: "サニックス・多結晶72セル(12×6)・296W・1957×992・最大システム電圧1000V",
+  },
+  // ===== 既設でよく出る既製パネル群（値はデータシート/スクショより。△は要確認） =====
+  // Trina PC05A（多結晶60セル）
+  {
+    id: "trina_pc05a_255", maker: "Trina Solar", model: "TSM-255PC05A",
+    lengthMm: 1650, widthMm: 992, thicknessMm: 35, weightKg: 18.6,
+    pmaxW: 255, vmpV: 30, impA: 8.37, vocV: 38.1, iscA: 8.88,
+    tempCoeffVocPctPerC: -0.32, tempCoeffPmaxPctPerC: -0.41, note: "多結晶60セル（Topsky製TSM-PC05A）",
+  },
+  {
+    id: "trina_pc05a_250", maker: "Trina Solar", model: "TSM-250PC05A",
+    lengthMm: 1650, widthMm: 992, thicknessMm: 35, weightKg: 18.6,
+    pmaxW: 250, vmpV: 30.3, impA: 8.27, vocV: 38, iscA: 8.79,
+    tempCoeffVocPctPerC: -0.32, tempCoeffPmaxPctPerC: -0.41, note: "多結晶60セル",
+  },
+  // Trina PD14（多結晶72セル）
+  {
+    id: "trina_pd14_320", maker: "Trina Solar", model: "TSM-320PD14",
+    lengthMm: 1960, widthMm: 992, thicknessMm: 40, weightKg: 26.5,
+    pmaxW: 320, vmpV: 37.1, impA: 8.63, vocV: 45.5, iscA: 9.15,
+    tempCoeffVocPctPerC: -0.32, tempCoeffPmaxPctPerC: -0.41, note: "多結晶72セル",
+  },
+  // Trina DD05A.08（単結晶PERC 60セル）△推定
+  {
+    id: "trina_dd05a_300", maker: "Trina Solar", model: "TSM-300DD05A.08(II)",
+    lengthMm: 1650, widthMm: 992, thicknessMm: 35, weightKg: 18.6,
+    pmaxW: 300, vmpV: 32.6, impA: 9.19, vocV: 39.9, iscA: 9.64,
+    tempCoeffVocPctPerC: -0.29, tempCoeffPmaxPctPerC: -0.39, note: "Honey M Plus 単結晶60セル",
+  },
+  // Hanwha Q CELLS
+  {
+    id: "qcells_qplus_lg41_340", maker: "Hanwha Q CELLS", model: "Q.PLUS L-G4.1 340",
+    lengthMm: 1994, widthMm: 1000, thicknessMm: 35, weightKg: 24,
+    pmaxW: 340, vmpV: 37.63, impA: 9.03, vocV: 47.07, iscA: 9.59,
+    tempCoeffVocPctPerC: -0.30, tempCoeffPmaxPctPerC: -0.40, note: "多結晶72セル",
+  },
+  {
+    id: "qcells_qpro_g3_255", maker: "Hanwha Q CELLS", model: "Q.PRO-G3 255",
+    lengthMm: 1670, widthMm: 1000, thicknessMm: 35, weightKg: 19,
+    pmaxW: 255, vmpV: 30.77, impA: 8.37, vocV: 37.83, iscA: 8.90,
+    tempCoeffVocPctPerC: -0.30, tempCoeffPmaxPctPerC: -0.44, note: "多結晶60セル",
+  },
+  // Jinko 72セル単結晶
+  {
+    id: "jinko_jkm370m72j", maker: "Jinko Solar", model: "JKM370M-72-J",
+    lengthMm: 1956, widthMm: 992, thicknessMm: 40, weightKg: 26.5,
+    pmaxW: 370, vmpV: 39.9, impA: 9.28, vocV: 48.5, iscA: 9.61,
+    tempCoeffVocPctPerC: -0.29, tempCoeffPmaxPctPerC: -0.39, note: "単結晶72セル",
+  },
+  {
+    id: "jinko_jkm360m72j", maker: "Jinko Solar", model: "JKM360M-72-J",
+    lengthMm: 1956, widthMm: 992, thicknessMm: 40, weightKg: 26.5,
+    pmaxW: 360, vmpV: 39.5, impA: 9.12, vocV: 48.0, iscA: 9.51,
+    tempCoeffVocPctPerC: -0.29, tempCoeffPmaxPctPerC: -0.39, note: "単結晶72セル",
+  },
+  // Jinko Cheetah HC 144ハーフセル △推定
+  {
+    id: "jinko_jkm400m72h", maker: "Jinko Solar", model: "JKM400M-72H",
+    lengthMm: 2008, widthMm: 1002, thicknessMm: 40, weightKg: 22.5,
+    pmaxW: 400, vmpV: 41.7, impA: 9.60, vocV: 49.8, iscA: 10.36,
+    tempCoeffVocPctPerC: -0.29, tempCoeffPmaxPctPerC: -0.35, note: "Cheetah HC 144ハーフセル単結晶PERC",
+  },
+  {
+    id: "jinko_jkm405m72h", maker: "Jinko Solar", model: "JKM405M-72H",
+    lengthMm: 2008, widthMm: 1002, thicknessMm: 40, weightKg: 22.5,
+    pmaxW: 405, vmpV: 42.0, impA: 9.65, vocV: 50.1, iscA: 10.48,
+    tempCoeffVocPctPerC: -0.29, tempCoeffPmaxPctPerC: -0.35, note: "Cheetah HC 144ハーフセル単結晶PERC",
+  },
+  // Canadian Solar 多結晶60セル
+  {
+    id: "canadian_cs6p_255p", maker: "Canadian Solar", model: "CS6P-255P",
+    lengthMm: 1638, widthMm: 982, thicknessMm: 40, weightKg: 18,
+    pmaxW: 255, vmpV: 30.2, impA: 8.43, vocV: 37.4, iscA: 9.00,
+    tempCoeffVocPctPerC: -0.34, tempCoeffPmaxPctPerC: -0.43, note: "多結晶60セル",
+  },
+  // JA Solar 156ハーフセル △STC推定
+  {
+    id: "jasolar_jam78s10_435mr", maker: "JA Solar", model: "JAM78S10-435/MR",
+    lengthMm: 2180, widthMm: 996, thicknessMm: 40, weightKg: 24.6,
+    pmaxW: 435, vmpV: 44.3, impA: 9.78, vocV: 53.6, iscA: 10.45,
+    tempCoeffVocPctPerC: -0.275, tempCoeffPmaxPctPerC: -0.35, note: "MBB PERC 156ハーフセル(78セル直列)・Voc高め",
+  },
+  // LONGi 144ハーフセル
+  {
+    id: "longi_lr5_72hph_540m", maker: "LONGi", model: "LR5-72HPH-540M",
+    lengthMm: 2256, widthMm: 1133, thicknessMm: 35, weightKg: 27.2,
+    pmaxW: 540, vmpV: 41.6, impA: 12.98, vocV: 49.5, iscA: 13.85,
+    tempCoeffVocPctPerC: -0.265, tempCoeffPmaxPctPerC: -0.34, note: "Hi-MO5 144ハーフセル単結晶",
+  },
+  // DMM 両面N型144ハーフセル
+  {
+    id: "dmm6_144ma_430dd", maker: "DMM.make solar", model: "DMM6-144MA-430DD",
+    lengthMm: 2035, widthMm: 1006, thicknessMm: 30, weightKg: 25.9,
+    pmaxW: 430, vmpV: 42.35, impA: 10.16, vocV: 50.54, iscA: 10.66,
+    tempCoeffVocPctPerC: -0.30, tempCoeffPmaxPctPerC: -0.35, note: "両面発電N型144ハーフセル・両面ガラス",
+  },
+  // Hanwha Q.PEAK-G4.1 60セル単結晶
+  {
+    id: "qcells_qpeak_g41_300", maker: "Hanwha Q CELLS", model: "Q.PEAK-G4.1 300",
+    lengthMm: 1670, widthMm: 1000, thicknessMm: 32, weightKg: 18.5,
+    pmaxW: 300, vmpV: 32.41, impA: 9.26, vocV: 39.76, iscA: 9.77,
+    tempCoeffVocPctPerC: -0.28, tempCoeffPmaxPctPerC: -0.39, note: "単結晶60セル（BLK-G4.1と同電気特性）",
+  },
 ];
 
+// 値はメーカー仕様書から。要現物・最新版確認（特に電流・電圧・回路数）。
 const SEED_PCS: PcsSpec[] = [
   {
     id: "huawei_495_nhl2",
@@ -100,6 +220,7 @@ const SEED_PCS: PcsSpec[] = [
     kind: "new",
     ratedPowerKw: 4.95,
     mpptCount: 2,
+    multiMppt: true,
     stringsPerMppt: 2,
     maxInputVoltageV: 600,
     mpptVoltageMinV: 90,
@@ -109,11 +230,189 @@ const SEED_PCS: PcsSpec[] = [
     unitPriceYen: 75500,
     note: "8台構成 / 10回路入力・主幹ELCB付",
   },
+  // === OMRON KPVシリーズ（よく選定される・4回路1MPPT＝マルチなし） ===
+  {
+    id: "omron_kpv_a55_j4",
+    maker: "OMRON",
+    model: "KPV-A55-J4",
+    kind: "new",
+    ratedPowerKw: 5.5,
+    mpptCount: 1,
+    multiMppt: false,
+    stringsPerMppt: 4,
+    maxInputVoltageV: 450,
+    mpptVoltageMinV: 50,
+    mpptVoltageMaxV: 450,
+    maxInputCurrentPerMpptA: 40,
+    note: "屋外・4回路1MPPT(非マルチ)・一般タイプ／定格入力320V。重塩害は KPV-A55-SJ4",
+  },
+  // === OMRON KPR-Aシリーズ（4MPPT＝マルチあり） ===
+  {
+    id: "omron_kpr_a48_j4",
+    maker: "OMRON",
+    model: "KPR-A48-J4",
+    kind: "new",
+    ratedPowerKw: 4.8,
+    mpptCount: 4,
+    multiMppt: true,
+    stringsPerMppt: 1,
+    maxInputVoltageV: 450,
+    mpptVoltageMinV: 50,
+    mpptVoltageMaxV: 450,
+    maxInputCurrentPerMpptA: 12,
+    note: "4MPPT(マルチ)・4.8kW。大電流型は KPR-A48-2J4(14A/回路)",
+  },
+  {
+    id: "omron_kpr_a56_j4",
+    maker: "OMRON",
+    model: "KPR-A56-J4",
+    kind: "new",
+    ratedPowerKw: 5.6,
+    mpptCount: 4,
+    multiMppt: true,
+    stringsPerMppt: 1,
+    maxInputVoltageV: 450,
+    mpptVoltageMinV: 50,
+    mpptVoltageMaxV: 450,
+    maxInputCurrentPerMpptA: 12,
+    note: "4MPPT(マルチ)・5.6kW。大電流型は KPR-A56-2J4(14A/回路)",
+  },
+  // === OMRON KPWシリーズ（4回路1MPPT＝マルチなし） ===
+  {
+    id: "omron_kpw_a48_j4",
+    maker: "OMRON",
+    model: "KPW-A48-J4",
+    kind: "new",
+    ratedPowerKw: 4.8,
+    mpptCount: 1,
+    multiMppt: false,
+    stringsPerMppt: 4,
+    maxInputVoltageV: 450,
+    mpptVoltageMinV: 50,
+    mpptVoltageMaxV: 450,
+    maxInputCurrentPerMpptA: 44,
+    note: "4回路1MPPT(非マルチ)・4.8kW・一般タイプ",
+  },
+  {
+    id: "omron_kpw_a55_j4",
+    maker: "OMRON",
+    model: "KPW-A55-J4",
+    kind: "new",
+    ratedPowerKw: 5.5,
+    mpptCount: 1,
+    multiMppt: false,
+    stringsPerMppt: 4,
+    maxInputVoltageV: 450,
+    mpptVoltageMinV: 50,
+    mpptVoltageMaxV: 450,
+    maxInputCurrentPerMpptA: 44,
+    note: "4回路1MPPT(非マルチ)・5.5kW・一般タイプ。重塩害は KPW-A55-SJ4",
+  },
+  // === OMRON KPW-A-2シリーズ（自家消費用・型式詳細は要確認） ===
+  {
+    id: "omron_kpw_a55_2",
+    maker: "OMRON",
+    model: "KPW-A55-2（自家消費用）",
+    kind: "new",
+    ratedPowerKw: 5.5,
+    mpptCount: 1,
+    multiMppt: false,
+    stringsPerMppt: 4,
+    maxInputVoltageV: 450,
+    mpptVoltageMinV: 50,
+    mpptVoltageMaxV: 450,
+    maxInputCurrentPerMpptA: 44,
+    note: "自家消費用KPW-A-2シリーズ・代表値。実際の型式/諸元は仕様書で要確認",
+  },
+  // === ダイヤゼブラ電機（EneTelus）EIBS No.8「エビハチ」蓄電ハイブリッド・単相 ===
+  {
+    id: "dz_eibs8_55",
+    maker: "ダイヤゼブラ電機",
+    model: "EHK-S55MP3B（EIBS No.8）",
+    kind: "new",
+    ratedPowerKw: 5.5,
+    mpptCount: 3,
+    multiMppt: true,
+    stringsPerMppt: 1,
+    maxInputVoltageV: 450,
+    mpptVoltageMinV: 30,
+    mpptVoltageMaxV: 450,
+    maxInputCurrentPerMpptA: 13.5,
+    note: "蓄電ハイブリッド(エビハチ)・単相5.5kW・3回路。蓄電池ユニット EOK-LB77-TK",
+  },
+  {
+    id: "dz_eibs8_80",
+    maker: "ダイヤゼブラ電機",
+    model: "EHK-S80MP4B（EIBS No.8）",
+    kind: "new",
+    ratedPowerKw: 8.0,
+    mpptCount: 4,
+    multiMppt: true,
+    stringsPerMppt: 1,
+    maxInputVoltageV: 450,
+    mpptVoltageMinV: 30,
+    mpptVoltageMaxV: 450,
+    maxInputCurrentPerMpptA: 13.5,
+    note: "蓄電ハイブリッド(エビハチ)・単相8.0kW・4回路",
+  },
+  {
+    id: "dz_eibs8_99",
+    maker: "ダイヤゼブラ電機",
+    model: "EHK-S99MP5B（EIBS No.8）",
+    kind: "new",
+    ratedPowerKw: 9.9,
+    mpptCount: 5,
+    multiMppt: true,
+    stringsPerMppt: 1,
+    maxInputVoltageV: 450,
+    mpptVoltageMinV: 30,
+    mpptVoltageMaxV: 450,
+    maxInputCurrentPerMpptA: 13.5,
+    note: "蓄電ハイブリッド(エビハチ)・単相9.9kW・5回路",
+  },
+  // === ダイヤゼブラ電機 三相9.9kW（自家消費・FIT/FIP対応・JET認証） ===
+  {
+    id: "dz_epl_t99mp5",
+    maker: "ダイヤゼブラ電機",
+    model: "EPL-T99MP5（三相9.9kW）",
+    kind: "new",
+    ratedPowerKw: 9.9,
+    mpptCount: 5,
+    multiMppt: true,
+    stringsPerMppt: 1,
+    maxInputVoltageV: 570,
+    mpptVoltageMinV: 150,
+    mpptVoltageMaxV: 550,
+    startVoltageV: 150,
+    maxInputCurrentPerMpptA: 10.3,
+    note: "三相9.9kW・自家消費/FIT/FIP・JET認証。マスターボックス EOU-A-MBX06 必須。重塩害は EPL-T99MP5-SDR",
+  },
 ];
+
+/** 表示順：Huawei と OMRON KPV を上位に、その他は後。 */
+function pcsPriority(p: PcsSpec): number {
+  const maker = (p.maker ?? "").toLowerCase();
+  if (maker.includes("huawei")) return 0;
+  if ((p.model ?? "").toUpperCase().startsWith("KPV")) return 1;
+  return 2;
+}
+function orderedPcs(list: PcsSpec[]): PcsSpec[] {
+  return list
+    .map((p, i) => ({ p, i }))
+    .sort((a, b) => pcsPriority(a.p) - pcsPriority(b.p) || a.i - b.i)
+    .map((x) => x.p);
+}
+
+/** 保存済みリストに、未登録の初期搭載マスタ（seed）を補完する。 */
+function mergeSeed<T extends { id: string }>(stored: T[], seed: T[]): T[] {
+  const ids = new Set(stored.map((s) => s.id));
+  const missing = seed.filter((s) => !ids.has(s.id));
+  return missing.length ? [...stored, ...missing] : stored;
+}
 
 export function usePanels() {
   const [panels, setPanels] = useState<PanelSpec[]>(() =>
-    load(KEYS.panels, SEED_PANELS)
+    mergeSeed(load(KEYS.panels, SEED_PANELS), SEED_PANELS)
   );
   useEffect(() => save(KEYS.panels, panels), [panels]);
 
@@ -136,7 +435,7 @@ export function usePanels() {
 
 export function usePcsList() {
   const [pcsList, setPcsList] = useState<PcsSpec[]>(() =>
-    load(KEYS.pcs, SEED_PCS)
+    mergeSeed(load(KEYS.pcs, SEED_PCS), SEED_PCS)
   );
   useEffect(() => save(KEYS.pcs, pcsList), [pcsList]);
 
@@ -154,7 +453,8 @@ export function usePcsList() {
     setPcsList((prev) => prev.filter((x) => x.id !== id));
   }, []);
 
-  return { pcsList, upsert, remove };
+  // 表示は Huawei・KPV を上位に並べ替えて返す
+  return { pcsList: orderedPcs(pcsList), upsert, remove };
 }
 
 export function useConditions() {

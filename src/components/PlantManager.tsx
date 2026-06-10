@@ -27,7 +27,15 @@ export function PlantManager({
   deletePlant,
 }: Props) {
   const [newName, setNewName] = useState("");
+  const [query, setQuery] = useState("");
   const current = plants.find((p) => p.id === currentId);
+
+  const q = query.trim().toLowerCase();
+  const filtered = q
+    ? plants.filter((p) =>
+        [p.name, p.customerName, p.address, p.note].some((v) => (v ?? "").toLowerCase().includes(q))
+      )
+    : plants;
 
   async function onImport(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
@@ -87,18 +95,32 @@ export function PlantManager({
       </div>
 
       <div className="card">
-        <h2>発電所一覧（{plants.length}）</h2>
-        <table className="list">
+        <div className="row" style={{ alignItems: "flex-end" }}>
+          <h2 style={{ margin: 0 }}>発電所一覧（{q ? `${filtered.length}/${plants.length}` : plants.length}）</h2>
+          <span className="spacer" />
+          <div className="field" style={{ minWidth: 240 }}>
+            <label>絞り込み検索</label>
+            <input
+              type="search"
+              value={query}
+              placeholder="発電所名・顧客名・所在地で検索"
+              onChange={(e) => setQuery(e.target.value)}
+            />
+          </div>
+        </div>
+        <table className="list" style={{ marginTop: 8 }}>
           <thead>
             <tr>
-              <th>発電所名 / 所在地</th>
+              <th>発電所名</th>
+              <th>顧客名</th>
+              <th>所在地</th>
               <th className="num">図面枚数</th>
               <th className="num">校正</th>
               <th></th>
             </tr>
           </thead>
           <tbody>
-            {plants.map((p) => (
+            {filtered.map((p) => (
               <tr
                 key={p.id}
                 style={{ outline: p.id === currentId ? "1px solid var(--accent)" : undefined }}
@@ -108,8 +130,9 @@ export function PlantManager({
                   {p.id === currentId && (
                     <span className="badge new" style={{ marginLeft: 8 }}>選択中</span>
                   )}
-                  <div className="hint">{p.address || "所在地未設定"}</div>
                 </td>
+                <td>{p.customerName || <span className="hint">—</span>}</td>
+                <td><span className="hint">{p.address || "未設定"}</span></td>
                 <td className="num">{panelCount(p)} 枚</td>
                 <td className="num">{p.layout.calibration ? "済" : "—"}</td>
                 <td className="num">
@@ -130,6 +153,9 @@ export function PlantManager({
                 </td>
               </tr>
             ))}
+            {filtered.length === 0 && (
+              <tr><td colSpan={6} className="empty">「{query}」に一致する発電所がありません。</td></tr>
+            )}
           </tbody>
         </table>
       </div>
@@ -143,6 +169,14 @@ export function PlantManager({
               <input
                 value={current.name}
                 onChange={(e) => updatePlant(current.id, { name: e.target.value })}
+              />
+            </div>
+            <div className="field">
+              <label>顧客名</label>
+              <input
+                value={current.customerName ?? ""}
+                placeholder="例：星野正好 様"
+                onChange={(e) => updatePlant(current.id, { customerName: e.target.value })}
               />
             </div>
             <div className="field">

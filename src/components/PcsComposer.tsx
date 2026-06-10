@@ -1,12 +1,14 @@
 import { useEffect, useState } from "react";
-import type { PanelSpec, PcsSpec, PowerPlant, PcsUnitLine, PcsString } from "../types";
+import type { PanelSpec, PcsSpec, PowerPlant, PcsUnitLine, PcsString, DesignConditions } from "../types";
 import { uid } from "../store";
 import { summarizeLayout } from "../calc/layoutCount";
+import { calcStringSizing } from "../calc/stringSizing";
 
 interface Props {
   plant: PowerPlant;
   panels: PanelSpec[];
   pcsList: PcsSpec[];
+  conditions: DesignConditions;
   updatePlant: (id: string, patch: Partial<Omit<PowerPlant, "id" | "layout" | "wiring">>) => void;
 }
 
@@ -16,7 +18,7 @@ interface Props {
  * 各台はストリング（使用パネル混在・直列数・並列）を持ち、
  * 合計V・DC kW・過積載率を自動計算。図面のパネル枚数とも突き合わせる。
  */
-export function PcsComposer({ plant, panels, pcsList, updatePlant }: Props) {
+export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }: Props) {
   const units = plant.pcsUnits ?? [];
   const [bulkCount, setBulkCount] = useState(1);
   const fmt = (n: number) => n.toLocaleString();
@@ -54,19 +56,46 @@ export function PcsComposer({ plant, panels, pcsList, updatePlant }: Props) {
       const dcW = cells * (panel?.pmaxW ?? 0);
       const vmpStr = s.series * (panel?.vmpV ?? 0);
       const vocStr = s.series * (panel?.vocV ?? 0);
-      const warns: string[] = [];
-      if (pcs) {
-        if (vmpStr > 0 && (vmpStr < pcs.mpptVoltageMinV || vmpStr > pcs.mpptVoltageMaxV))
-          warns.push(`動作電圧 ${vmpStr.toFixed(0)}V がMPPT範囲(${pcs.mpptVoltageMinV}–${pcs.mpptVoltageMaxV}V)外`);
-        if (vocStr > pcs.maxInputVoltageV)
-          warns.push(`開放電圧 ${vocStr.toFixed(0)}V が最大入力 ${pcs.maxInputVoltageV}V 超過`);
+      // ストリング計算（温度補正込み）でPCS上限を判定。超えたらエラー。
+      const errors: string[] = [];
+      if (pcs && panel) {
+        const sz = calcStringSizing(panel, pcs, conditions);
+        if (s.series > sz.seriesMaxByVoltage)
+          errors.push(
+            `直列${s.series}本：低温Voc合計 ${(sz.detail.vocLowTemp * s.series).toFixed(0)}V が最大入力 ${pcs.maxInputVoltageV}V を超過（上限 ${sz.seriesMaxByVoltage}本）`
+          );
+        if (s.series < sz.seriesMinByMppt)
+          errors.push(
+            `直列${s.series}本：高温Vmp合計 ${(sz.detail.vmpHighTemp * s.series).toFixed(0)}V がMPPT下限 ${pcs.mpptVoltageMinV}V を下回る（下限 ${sz.seriesMinByMppt}本）`
+          );
+        if (s.parallel > sz.parallelMaxPerMppt)
+          errors.push(
+            `並列${s.parallel}本：最大入力電流 ${pcs.maxInputCurrentPerMpptA}A／並列上限 ${pcs.stringsPerMppt} を超過（上限 ${sz.parallelMaxPerMppt}本）`
+          );
       }
-      return { s, panel, cells, dcW, vmpStr, vocStr, warns };
+      return { s, panel, cells, dcW, vmpStr, vocStr, errors };
     });
     const unitCells = strings.reduce((a, b) => a + b.cells, 0);
     const unitDcKw = strings.reduce((a, b) => a + b.dcW, 0) / 1000;
     const overloadPct = ratedKw > 0 ? (unitDcKw / ratedKw) * 100 : 0;
-    return { no: idx + 1, line: u, pcs, ratedKw, strings, unitCells, unitDcKw, overloadPct };
+    // ユニット単位のエラー（MPPT回路数より多いストリング行）
+    const unitErrors: string[] = [];
+    if (pcs && (u.strings?.length ?? 0) > pcs.mpptCount)
+      unitErrors.push(`ストリング行 ${u.strings?.length} がMPPT回路数 ${pcs.mpptCount} を超過`);
+    // 非マルチMPPT機：全ストリングを同一パネル・同一直列数にしないと非効率
+    if (pcs && pcs.multiMppt === false) {
+      const ss = u.strings ?? [];
+      if (ss.length > 1) {
+        const samePanel = ss.every((s) => s.panelId === ss[0].panelId);
+        const sameSeries = ss.every((s) => s.series === ss[0].series);
+        if (!samePanel || !sameSeries)
+          unitErrors.push(
+            "非マルチMPPT機：全ストリングを同一パネル・同一直列数に揃えてください（パネル/枚数が混在すると最弱ストリングに律速され非効率）"
+          );
+      }
+    }
+    const hasError = unitErrors.length > 0 || strings.some((s) => s.errors.length > 0);
+    return { no: idx + 1, line: u, pcs, ratedKw, strings, unitCells, unitDcKw, overloadPct, unitErrors, hasError };
   });
 
   const totalUnits = units.length;
@@ -75,6 +104,7 @@ export function PcsComposer({ plant, panels, pcsList, updatePlant }: Props) {
   const usedPanels = computed.reduce((s, g) => s + g.unitCells, 0);
   const overloadPct = totalAcKw > 0 ? (totalDcKw / totalAcKw) * 100 : 0;
   const remainPanels = layoutPanels - usedPanels;
+  const errorUnits = computed.filter((g) => g.hasError);
 
   // --- 更新ヘルパ ---
   function setUnits(next: PcsUnitLine[]) {
@@ -210,6 +240,15 @@ export function PcsComposer({ plant, panels, pcsList, updatePlant }: Props) {
             ⚠ 構成DC {kw(totalDcKw)}kW が出力上限 {capKw}kW を超過。買取単価区分に注意。
           </div>
         )}
+        {errorUnits.length > 0 && (
+          <div
+            className="warn-item"
+            style={{ marginTop: 6, background: "rgba(244,63,94,0.12)", borderColor: "var(--danger)", color: "var(--danger)" }}
+          >
+            ⛔ ストリング設計エラー：{errorUnits.length} 台（#{errorUnits.map((g) => g.no).join(", #")}）。
+            直列数・並列数がパワコンの電圧/電流上限を超えています。各台の赤い表示を確認してください。
+          </div>
+        )}
         <div className="row" style={{ marginTop: 10, alignItems: "flex-end" }}>
           <button className="btn" onClick={() => addUnits(1)}>＋ パワコンを1台追加</button>
           <div className="field" style={{ width: 90 }}>
@@ -231,7 +270,11 @@ export function PcsComposer({ plant, panels, pcsList, updatePlant }: Props) {
 
       {/* 1台ずつのカード */}
       {computed.map((g) => (
-        <div className="card" key={g.line.id}>
+        <div
+          className="card"
+          key={g.line.id}
+          style={g.hasError ? { borderColor: "var(--danger)", boxShadow: "0 0 0 1px var(--danger) inset" } : undefined}
+        >
           <div className="form-grid">
             <div className="field" style={{ width: 70 }}>
               <label>No.</label>
@@ -246,7 +289,9 @@ export function PcsComposer({ plant, panels, pcsList, updatePlant }: Props) {
                   </option>
                 ))}
               </select>
-              <div className="hint">MPPT {g.pcs?.mpptCount ?? "—"} 回路</div>
+              <div className="hint">
+                MPPT {g.pcs?.mpptCount ?? "—"} 回路 ／ マルチ{g.pcs?.multiMppt === false ? "なし（全ストリング同一が必要）" : "あり"}
+              </div>
             </div>
             <div className="field" style={{ flex: 1, minWidth: 160 }}>
               <label>メモ</label>
@@ -272,7 +317,7 @@ export function PcsComposer({ plant, panels, pcsList, updatePlant }: Props) {
                 <th className="num">W</th>
                 <th className="num">直列数</th>
                 <th className="num">並列</th>
-                <th className="num">合計V(Vmp)</th>
+                <th className="num">合計V(Voc)</th>
                 <th className="num">枚数</th>
                 <th className="num">DC(kW)</th>
                 <th></th>
@@ -287,8 +332,14 @@ export function PcsComposer({ plant, panels, pcsList, updatePlant }: Props) {
                         <option key={p.id} value={p.id}>{p.maker} {p.model}</option>
                       ))}
                     </select>
-                    {st.warns.map((wm, i) => (
-                      <div className="warn-item" key={i} style={{ marginTop: 2 }}>⚠ {wm}</div>
+                    {st.errors.map((em, i) => (
+                      <div
+                        className="warn-item"
+                        key={i}
+                        style={{ marginTop: 2, color: "var(--danger)", borderColor: "var(--danger)", background: "rgba(244,63,94,0.1)" }}
+                      >
+                        ⛔ {em}
+                      </div>
                     ))}
                   </td>
                   <td className="num">{st.panel?.pmaxW ?? "—"}</td>
@@ -304,7 +355,9 @@ export function PcsComposer({ plant, panels, pcsList, updatePlant }: Props) {
                       onChange={(e) => updateString(g.line.id, st.s.id, { parallel: Math.max(1, Number(e.target.value) || 1) })}
                     />
                   </td>
-                  <td className="num">{st.vmpStr.toFixed(0)}</td>
+                  <td className="num" style={{ color: g.pcs && st.vocStr > g.pcs.maxInputVoltageV ? "var(--danger)" : undefined }}>
+                    {st.vocStr.toFixed(0)}
+                  </td>
                   <td className="num">{st.cells}</td>
                   <td className="num">{(st.dcW / 1000).toFixed(2)}</td>
                   <td className="num">
@@ -323,6 +376,12 @@ export function PcsComposer({ plant, panels, pcsList, updatePlant }: Props) {
             </tfoot>
           </table>
 
+          {g.unitErrors.map((em, i) => (
+            <div className="warn-item" key={i} style={{ marginTop: 4, color: "var(--danger)", borderColor: "var(--danger)", background: "rgba(244,63,94,0.1)" }}>
+              ⛔ {em}
+            </div>
+          ))}
+
           <div className="row" style={{ marginTop: 6 }}>
             <button className="btn secondary small" onClick={() => addString(g.line.id)}>＋ ストリング追加</button>
             <button
@@ -334,12 +393,22 @@ export function PcsComposer({ plant, panels, pcsList, updatePlant }: Props) {
             </button>
             <span className="spacer" />
             <span className="hint">
+              {g.hasError && <strong style={{ color: "var(--danger)", marginRight: 6 }}>⛔ ストリングエラーあり</strong>}
               1台AC {kw(g.ratedKw)}kW ／ 1台DC {kw(g.unitDcKw)}kW ／
               <strong style={{ color: g.overloadPct > 130 ? "var(--warn)" : undefined, marginLeft: 4 }}>
                 過積載率 {g.ratedKw > 0 ? g.overloadPct.toFixed(0) : "—"}%
               </strong>
             </span>
           </div>
+          {g.pcs && g.strings[0]?.panel && (() => {
+            const sz = calcStringSizing(g.strings[0].panel, g.pcs, conditions);
+            return (
+              <div className="hint" style={{ marginTop: 4 }}>
+                適合範囲（{g.strings[0].panel.model}・温度補正）：直列 {sz.seriesRange.min}–{sz.seriesRange.max} 本 ／ 並列 最大 {sz.parallelMaxPerMppt} 本/MPPT
+                （低温Voc {sz.detail.vocLowTemp.toFixed(1)}V・高温Vmp {sz.detail.vmpHighTemp.toFixed(1)}V）
+              </div>
+            );
+          })()}
         </div>
       ))}
 
@@ -387,7 +456,7 @@ export function PcsComposer({ plant, panels, pcsList, updatePlant }: Props) {
           </table>
           <div className="hint" style={{ marginTop: 8 }}>
             使用 {fmt(usedPanels)} 枚 / 図面 {fmt(layoutPanels)} 枚（{remainPanels >= 0 ? `残 ${fmt(remainPanels)}` : `不足 ${fmt(-remainPanels)}`} 枚）。
-            合計V＝直列数×Vmp。電圧がパワコン範囲外のストリングは ⚠ で表示します。
+            合計V＝直列数×Voc（開放電圧, STC）。パワコン最大入力電圧を超えると赤字＋⛔エラー。直列上限は低温Vocで自動判定します。
           </div>
         </div>
       )}

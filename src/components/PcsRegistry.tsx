@@ -18,6 +18,7 @@ function emptyPcs(): PcsSpec {
     kind: "new",
     ratedPowerKw: 0,
     mpptCount: 1,
+    multiMppt: true,
     stringsPerMppt: 1,
     maxInputVoltageV: 0,
     mpptVoltageMinV: 0,
@@ -98,6 +99,16 @@ export function PcsRegistry({ store }: Props) {
           <div className="field">
             <label>MPPT 回路数</label>
             <input type="number" value={draft.mpptCount || ""} onChange={num("mpptCount")} />
+          </div>
+          <div className="field">
+            <label>マルチMPPT機能</label>
+            <select
+              value={draft.multiMppt === false ? "no" : "yes"}
+              onChange={(e) => setDraft((d) => ({ ...d, multiMppt: e.target.value === "yes" }))}
+            >
+              <option value="yes">あり（入力ごとに別パネル可）</option>
+              <option value="no">なし（全ストリング同一が必要）</option>
+            </select>
           </div>
           <div className="field">
             <label>MPPTあたり最大並列数</label>

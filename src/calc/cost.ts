@@ -17,61 +17,77 @@ export interface CostResult {
   yenPerW: number | null;
 }
 
+/** 新設パネルの1行（型式ごと）。 */
+export interface NewPanelLine {
+  /** 表示名（メーカー＋型式） */
+  label: string;
+  /** 枚数 */
+  count: number;
+  /** 単価 (円/枚) */
+  unitYen: number;
+  /** 1枚の出力 (W) — 円/W 算出用 */
+  w: number;
+}
+
 export interface CostInput {
-  /** 新設パネル枚数 */
-  newPanels: number;
-  /** 新パネル単価 (円/枚) */
-  panelUnitYen: number;
-  /** 撤去パネル枚数 */
-  removedPanels: number;
+  /** 新設パネル（型式ごとに複数行可） */
+  newPanelLines: NewPanelLine[];
+  /** 撤去した既設パネルのうち「処分」に回す枚数 */
+  removedDisposal: number;
+  /** 撤去した既設パネルのうち「在庫」に回す枚数（処分費はかからない） */
+  removedStock: number;
   /** 新設パワコン台数 */
   newPcsCount: number;
   /** 新パワコン単価 (円/台) */
   pcsUnitYen: number;
   /** 撤去パワコン台数 */
   removedPcsCount: number;
-  /** 新設パネルの合計出力 (W) — 円/W 算出用 */
-  newPanelW: number;
+  /** 周辺機器など追加の材料費行（監視装置など）。任意。 */
+  extraLines?: { label: string; count: number; unitYen: number }[];
   rates: CostRates;
 }
 
 /**
  * 入換工事の概算コストを項目別に積み上げる。
- *   材料費（パネル/パワコン）＋ 工事費（設置/撤去）＋ 諸経費。
+ *   材料費（新パネル各型式/パワコン）＋ 工事費（設置/撤去）＋ 処分費 ＋ 諸経費。
+ *   撤去は「処分」「在庫」に分け、処分費は処分分だけ。撤去工事費は両方にかかる。
  */
 export function estimateCost(input: CostInput): CostResult {
-  const {
-    newPanels,
-    panelUnitYen,
-    removedPanels,
-    newPcsCount,
-    pcsUnitYen,
-    removedPcsCount,
-    newPanelW,
-    rates,
-  } = input;
+  const { newPanelLines, removedDisposal, removedStock, newPcsCount, pcsUnitYen, removedPcsCount, rates } = input;
+
+  const newPanelsTotal = newPanelLines.reduce((s, l) => s + l.count, 0);
+  const newPanelW = newPanelLines.reduce((s, l) => s + l.count * l.w, 0);
+  const removedTotal = removedDisposal + removedStock;
 
   const lines: CostLine[] = [
-    {
-      label: "新パネル 材料費",
-      qty: newPanels,
+    // 新パネル材料費（型式ごと）
+    ...newPanelLines.map((l) => ({
+      label: `新パネル 材料費（${l.label}）`,
+      qty: l.count,
       unit: "枚",
-      unitYen: panelUnitYen,
-      amountYen: newPanels * panelUnitYen,
-    },
+      unitYen: l.unitYen,
+      amountYen: l.count * l.unitYen,
+    })),
     {
       label: "パネル 設置工事",
-      qty: newPanels,
+      qty: newPanelsTotal,
       unit: "枚",
       unitYen: rates.panelInstallYen,
-      amountYen: newPanels * rates.panelInstallYen,
+      amountYen: newPanelsTotal * rates.panelInstallYen,
     },
     {
-      label: "既設パネル 撤去",
-      qty: removedPanels,
+      label: "既設パネル 撤去工事（処分＋在庫）",
+      qty: removedTotal,
       unit: "枚",
       unitYen: rates.panelRemovalYen,
-      amountYen: removedPanels * rates.panelRemovalYen,
+      amountYen: removedTotal * rates.panelRemovalYen,
+    },
+    {
+      label: "既設パネル 処分費",
+      qty: removedDisposal,
+      unit: "枚",
+      unitYen: rates.panelDisposalYen,
+      amountYen: removedDisposal * rates.panelDisposalYen,
     },
     {
       label: "新パワコン 材料費",
@@ -94,6 +110,14 @@ export function estimateCost(input: CostInput): CostResult {
       unitYen: rates.pcsRemovalYen,
       amountYen: removedPcsCount * rates.pcsRemovalYen,
     },
+    // 周辺機器（監視装置など）
+    ...(input.extraLines ?? []).map((e) => ({
+      label: e.label,
+      qty: e.count,
+      unit: "式",
+      unitYen: e.unitYen,
+      amountYen: e.count * e.unitYen,
+    })),
   ].filter((l) => l.qty > 0);
 
   const subtotalYen = lines.reduce((s, l) => s + l.amountYen, 0);

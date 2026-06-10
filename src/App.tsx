@@ -4,22 +4,19 @@ import { PcsRegistry } from "./components/PcsRegistry";
 import { StringCalculator } from "./components/StringCalculator";
 import { LayoutEditor } from "./components/LayoutEditor";
 import { PlantManager } from "./components/PlantManager";
-import { WiringTable } from "./components/WiringTable";
 import { PcsComposer } from "./components/PcsComposer";
-import { Optimizer } from "./components/Optimizer";
 import { CostEstimator } from "./components/CostEstimator";
-import { ExistingPcsCheck } from "./components/ExistingPcsCheck";
+import { Guide } from "./components/Guide";
 import { usePanels, usePcsList, useConditions, usePlants, useCostRates } from "./store";
 
-type Tab = "plant" | "layout" | "optimize" | "pcsunits" | "wiring" | "existing" | "cost" | "panel" | "pcs" | "string";
+const GUIDE_KEY = "solar-layout.onboarded";
+
+type Tab = "plant" | "layout" | "pcsunits" | "cost" | "panel" | "pcs" | "string";
 
 const TABS: { key: Tab; label: string }[] = [
   { key: "plant", label: "発電所" },
   { key: "layout", label: "現況レイアウト" },
-  { key: "optimize", label: "入換最適化" },
   { key: "pcsunits", label: "パワコン構成" },
-  { key: "wiring", label: "パワコン配線表" },
-  { key: "existing", label: "既設パワコン確認" },
   { key: "cost", label: "概算コスト" },
   { key: "panel", label: "パネル登録" },
   { key: "pcs", label: "パワコン登録" },
@@ -35,12 +32,30 @@ export default function App() {
   const plantStore = usePlants();
   const current = plantStore.current;
 
+  // 初めて使う人向けガイド（初回は自動表示／「次回から表示しない」で抑制／❓使い方で再表示）
+  const [showGuide, setShowGuide] = useState(() => {
+    try { return localStorage.getItem(GUIDE_KEY) !== "1"; } catch { return true; }
+  });
+  function dontShowGuideAgain() {
+    try { localStorage.setItem(GUIDE_KEY, "1"); } catch { /* ignore */ }
+    setShowGuide(false);
+  }
+
   return (
     <div className="app">
+      <Guide
+        open={showGuide}
+        onClose={() => setShowGuide(false)}
+        onDontShowAgain={dontShowGuideAgain}
+        goTo={(t) => setTab(t as Tab)}
+      />
       <header className="app-header no-print">
         <h1>☀ ソーラーレイアウト設計支援</h1>
         <span className="sub">発電所別 図面 ＆ パワコン配線</span>
         <span className="spacer" />
+        <button className="btn secondary small" onClick={() => setShowGuide(true)} title="使い方ガイドを開く">
+          ❓ 使い方
+        </button>
         <div className="field" style={{ minWidth: 220 }}>
           <label>対象の発電所</label>
           <select
@@ -82,34 +97,16 @@ export default function App() {
           layout={current.layout}
           patch={plantStore.patchLayout}
           defaultAddress={current.address}
+          pcsUnits={current.pcsUnits}
         />
-      )}
-      {tab === "optimize" && current && (
-        <Optimizer plant={current} panels={panelStore.panels} />
       )}
       {tab === "pcsunits" && current && (
         <PcsComposer
           plant={current}
           panels={panelStore.panels}
           pcsList={pcsStore.pcsList}
+          conditions={condStore.conditions}
           updatePlant={plantStore.updatePlant}
-        />
-      )}
-      {tab === "wiring" && current && (
-        <WiringTable
-          plant={current}
-          panels={panelStore.panels}
-          pcsList={pcsStore.pcsList}
-          conditions={condStore.conditions}
-          patchWiring={plantStore.patchWiring}
-        />
-      )}
-      {tab === "existing" && current && (
-        <ExistingPcsCheck
-          plant={current}
-          panels={panelStore.panels}
-          pcsList={pcsStore.pcsList}
-          conditions={condStore.conditions}
         />
       )}
       {tab === "cost" && current && (
