@@ -8,6 +8,7 @@ import type {
 } from "../types";
 import { calcStringSizing } from "../calc/stringSizing";
 import { generateWiring } from "../calc/wiring";
+import { countShadedPanels, pixelsPerMeterOf } from "../calc/shadow";
 
 interface Props {
   plant: PowerPlant;
@@ -160,6 +161,35 @@ export function WiringTable({ plant, panels, pcsList, conditions, patchWiring }:
         )}
 
         <h3>影ゾーン（過積載率の調整）</h3>
+        {(() => {
+          const zones = plant.layout.shadowZones ?? [];
+          if (!zones.length) return null;
+          const shadedPanels = countShadedPanels(
+            plant.layout.arrays,
+            panels,
+            pixelsPerMeterOf(plant.layout.calibration),
+            zones
+          );
+          const panelsPerPcs =
+            w.seriesPerString * w.parallelPerMppt * (pcs?.mpptCount ?? 0);
+          const estShadedPcs = panelsPerPcs > 0 ? Math.round(shadedPanels / panelsPerPcs) : 0;
+          return (
+            <div className="row" style={{ marginBottom: 8 }}>
+              <span className="hint">
+                図面の影ゾーンにかかるパネル <strong>{shadedPanels}</strong> 枚
+                {panelsPerPcs > 0 && <> ≒ <strong>{estShadedPcs}</strong> 台分</>}
+              </span>
+              {panelsPerPcs > 0 && (
+                <button
+                  className="btn secondary small"
+                  onClick={() => patchWiring({ shadedPcsCount: estShadedPcs })}
+                >
+                  図面の影を反映
+                </button>
+              )}
+            </div>
+          );
+        })()}
         <div className="form-grid">
           <div className="field">
             <label>影ゾーンのパワコン台数</label>

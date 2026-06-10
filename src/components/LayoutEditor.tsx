@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PanelSpec, LayoutProject, PanelArray } from "../types";
+import type { PanelSpec, LayoutProject, PanelArray, ShadowZone } from "../types";
 import { cellKey } from "../types";
+import { shadedCellKeys } from "../calc/shadow";
 import { fileToScaledDataUrl } from "../utils/image";
 import { uid } from "../store";
 
@@ -25,9 +26,10 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgReady, setImgReady] = useState(false);
   const [view, setView] = useState<View>({ tx: 40, ty: 40, zoom: 0.5 });
-  const [mode, setMode] = useState<"pan" | "calibrate" | "select">("pan");
+  const [mode, setMode] = useState<"pan" | "calibrate" | "select" | "shadow">("pan");
   const [calibPts, setCalibPts] = useState<{ x: number; y: number }[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [shadowDraft, setShadowDraft] = useState<ShadowZone | null>(null);
 
   // 配置フォーム
   const [formPanelId, setFormPanelId] = useState(panels[0]?.id ?? "");
@@ -124,14 +126,18 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
       ctx.globalAlpha = 1;
     }
 
+    const zones = layout.shadowZones ?? [];
+
     // パネル配列
     for (const arr of layout.arrays) {
-      const { pw, ph, gapPx } = arrayPanelPx(arr);
+      const dims = arrayPanelPx(arr);
+      const { pw, ph, gapPx } = dims;
       ctx.save();
       ctx.translate(arr.posXpx, arr.posYpx);
       ctx.rotate((arr.rotationDeg * Math.PI) / 180);
       const selected = arr.id === selectedId;
       const keep = new Set(arr.keepCells ?? []);
+      const shaded = shadedCellKeys(arr, dims, zones);
       for (let r = 0; r < arr.rows; r++) {
         for (let col = 0; col < arr.cols; col++) {
           const x = col * (pw + gapPx);
@@ -142,6 +148,11 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
           ctx.lineWidth = (isKeep ? 1.5 : selected ? 2 : 1) / view.zoom;
           ctx.fillRect(x, y, pw, ph);
           ctx.strokeRect(x, y, pw, ph);
+          // 影に入るセルは暗くオーバーレイ
+          if (shaded.has(cellKey(r, col))) {
+            ctx.fillStyle = "rgba(15,23,42,0.55)";
+            ctx.fillRect(x, y, pw, ph);
+          }
         }
       }
       // 選択枠
@@ -168,8 +179,26 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
       ctx.fill();
     }
 
+    // 影ゾーン
+    for (const z of zones) {
+      ctx.fillStyle = "rgba(15,23,42,0.35)";
+      ctx.fillRect(z.x, z.y, z.w, z.h);
+      ctx.strokeStyle = "#0ea5e9";
+      ctx.lineWidth = 1.5 / view.zoom;
+      ctx.setLineDash([6 / view.zoom, 4 / view.zoom]);
+      ctx.strokeRect(z.x, z.y, z.w, z.h);
+      ctx.setLineDash([]);
+    }
+    if (shadowDraft) {
+      ctx.fillStyle = "rgba(14,165,233,0.2)";
+      ctx.fillRect(shadowDraft.x, shadowDraft.y, shadowDraft.w, shadowDraft.h);
+      ctx.strokeStyle = "#0ea5e9";
+      ctx.lineWidth = 1.5 / view.zoom;
+      ctx.strokeRect(shadowDraft.x, shadowDraft.y, shadowDraft.w, shadowDraft.h);
+    }
+
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-  }, [view, rot, layout, selectedId, calibPts, arrayPanelPx]);
+  }, [view, rot, layout, selectedId, calibPts, shadowDraft, arrayPanelPx]);
 
   useEffect(() => {
     draw();
@@ -199,6 +228,17 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     orig: { tx: number; ty: number } | { px: number; py: number };
     arrId?: string;
   } | null>(null);
+  const shadowStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  function rectFrom(a: { x: number; y: number }, b: { x: number; y: number }): ShadowZone {
+    return {
+      id: "draft",
+      x: Math.min(a.x, b.x),
+      y: Math.min(a.y, b.y),
+      w: Math.abs(a.x - b.x),
+      h: Math.abs(a.y - b.y),
+    };
+  }
 
   function hitArray(ix: number, iy: number): PanelArray | null {
     for (let i = layout.arrays.length - 1; i >= 0; i--) {
@@ -285,6 +325,11 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
 
+    if (mode === "shadow") {
+      shadowStartRef.current = screenToImage(sx, sy);
+      return;
+    }
+
     if (mode === "select") {
       const img = screenToImage(sx, sy);
       const cell = hitCell(img.x, img.y);
@@ -337,12 +382,20 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
   }
 
   function onMouseMove(e: React.MouseEvent) {
-    const d = dragRef.current;
-    if (!d) return;
     const c = canvasRef.current!;
     const rect = c.getBoundingClientRect();
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
+
+    // 影ゾーンのドラッグ描画
+    if (mode === "shadow" && shadowStartRef.current) {
+      const cur = screenToImage(sx, sy);
+      setShadowDraft(rectFrom(shadowStartRef.current, cur));
+      return;
+    }
+
+    const d = dragRef.current;
+    if (!d) return;
     const dsx = sx - d.startSx;
     const dsy = sy - d.startSy;
 
@@ -367,6 +420,15 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
 
   function onMouseUp() {
     dragRef.current = null;
+    // 影ゾーンの確定
+    if (mode === "shadow" && shadowStartRef.current) {
+      shadowStartRef.current = null;
+      if (shadowDraft && shadowDraft.w > 4 && shadowDraft.h > 4) {
+        const zone: ShadowZone = { ...shadowDraft, id: uid("shadow") };
+        patch({ shadowZones: [...(layout.shadowZones ?? []), zone] });
+      }
+      setShadowDraft(null);
+    }
   }
 
   function onWheel(e: React.WheelEvent) {
@@ -448,6 +510,18 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
   const selected = layout.arrays.find((a) => a.id === selectedId) ?? null;
   const totalPanels = layout.arrays.reduce((s, a) => s + a.rows * a.cols, 0);
   const keepTotal = layout.arrays.reduce((s, a) => s + (a.keepCells?.length ?? 0), 0);
+  const zones = layout.shadowZones ?? [];
+  const shadedTotal = layout.arrays.reduce(
+    (s, a) => s + shadedCellKeys(a, arrayPanelPx(a), zones).size,
+    0
+  );
+
+  function deleteZone(id: string) {
+    patch({ shadowZones: zones.filter((z) => z.id !== id) });
+  }
+  function clearZones() {
+    patch({ shadowZones: [] });
+  }
 
   function setAllPlant(keepAll: boolean) {
     patch({
@@ -564,6 +638,33 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
                 指定モードで個別パネルをクリックして切替。
               </span>
             </div>
+
+            <h3>影ゾーン</h3>
+            <div className="row">
+              <button
+                className={`btn small ${mode === "shadow" ? "" : "secondary"}`}
+                onClick={() => setMode(mode === "shadow" ? "pan" : "shadow")}
+              >
+                {mode === "shadow" ? "描画中：ドラッグで影エリアを囲む" : "影ゾーンを描く"}
+              </button>
+              {zones.length > 0 && (
+                <button className="btn secondary small" onClick={clearZones}>影を全消去</button>
+              )}
+              <span className="hint">
+                影になる範囲をドラッグで囲むと、かかるパネルを暗く表示し枚数をカウント。
+                合計 <strong>{shadedTotal}</strong> 枚が影。
+              </span>
+            </div>
+            {zones.length > 0 && (
+              <div className="row" style={{ marginTop: 6, gap: 6, flexWrap: "wrap" }}>
+                {zones.map((z, i) => (
+                  <span key={z.id} className="badge" style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                    影{i + 1}
+                    <button className="btn danger small" style={{ padding: "0 6px" }} onClick={() => deleteZone(z.id)}>×</button>
+                  </span>
+                ))}
+              </div>
+            )}
           </>
         )}
       </div>
@@ -572,7 +673,7 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
           <canvas
             ref={canvasRef}
-            style={{ display: "block", width: "100%", cursor: mode === "calibrate" || mode === "select" ? "crosshair" : "grab" }}
+            style={{ display: "block", width: "100%", cursor: mode === "calibrate" || mode === "select" || mode === "shadow" ? "crosshair" : "grab" }}
             onMouseDown={onMouseDown}
             onMouseMove={onMouseMove}
             onMouseUp={onMouseUp}

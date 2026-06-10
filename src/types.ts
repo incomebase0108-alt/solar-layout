@@ -154,6 +154,19 @@ export function cellKey(r: number, c: number): string {
 }
 
 /**
+ * 影ゾーン：画像ピクセル座標の矩形（軸並行）。
+ * この中に入るパネルセルを「影」と判定する。
+ */
+export interface ShadowZone {
+  id: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  label?: string;
+}
+
+/**
  * 現況レイアウトのプロジェクト（写真＋校正＋配列）。
  */
 export interface LayoutProject {
@@ -167,6 +180,8 @@ export interface LayoutProject {
   calibration: Calibration | null;
   /** 配置済みパネル配列 */
   arrays: PanelArray[];
+  /** 影ゾーン（任意） */
+  shadowZones?: ShadowZone[];
 }
 
 export const EMPTY_LAYOUT: LayoutProject = {
@@ -175,6 +190,7 @@ export const EMPTY_LAYOUT: LayoutProject = {
   imageOpacity: 1,
   calibration: null,
   arrays: [],
+  shadowZones: [],
 };
 
 // ============================================================
