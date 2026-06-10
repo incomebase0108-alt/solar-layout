@@ -17,11 +17,12 @@ interface Props {
 const yen = (n: number) => "¥" + Math.round(n).toLocaleString("ja-JP");
 
 export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates, updatePlant }: Props) {
-  // 図面の入換対象枚数（流用を除く）
-  const replaceCount = plant.layout.arrays.reduce(
-    (s, a) => s + a.rows * a.cols - (a.keepCells?.length ?? 0),
-    0
-  );
+  // 図面の入換対象枚数（流用・撤去を除く＋単独追加を含む）
+  const replaceCount =
+    plant.layout.arrays.reduce(
+      (s, a) => s + a.rows * a.cols - (a.keepCells?.length ?? 0) - (a.removedCells?.length ?? 0),
+      0
+    ) + (plant.layout.freePanels?.length ?? 0);
 
   // 現状容量・流用分容量（既設パネル基準）
   const { beforeKw, keptKw } = useMemo(() => {
@@ -30,7 +31,8 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
     for (const a of plant.layout.arrays) {
       const p = panels.find((x) => x.id === a.panelId);
       const pmax = p?.pmaxW ?? 0;
-      before += (a.rows * a.cols * pmax) / 1000;
+      const live = a.rows * a.cols - (a.removedCells?.length ?? 0);
+      before += (live * pmax) / 1000;
       kept += ((a.keepCells?.length ?? 0) * pmax) / 1000;
     }
     return { beforeKw: before, keptKw: kept };

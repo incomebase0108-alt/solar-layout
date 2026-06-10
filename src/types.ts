@@ -146,6 +146,25 @@ export interface PanelArray {
    * 既定は空＝全セル入換対象。ここに入ったセルは既設流用。
    */
   keepCells?: string[];
+  /**
+   * 撤去したセル（空き）のキー一覧。"行,列"。
+   * フェンス離隔などで取り外した位置。枚数にカウントしない。
+   */
+  removedCells?: string[];
+}
+
+/**
+ * 単独パネル（配列とは別に1枚ずつ置けるパネル）。
+ * 向きを個別に選べ、増設や端部の調整に使う。
+ */
+export interface FreePanel {
+  id: string;
+  panelId: string;
+  orientation: "portrait" | "landscape";
+  posXpx: number;
+  posYpx: number;
+  rotationDeg: number;
+  color: string;
 }
 
 /** セルキー生成 */
@@ -182,6 +201,8 @@ export interface LayoutProject {
   arrays: PanelArray[];
   /** 影ゾーン（任意） */
   shadowZones?: ShadowZone[];
+  /** 単独パネル（1枚ずつ追加, 任意） */
+  freePanels?: FreePanel[];
 }
 
 export const EMPTY_LAYOUT: LayoutProject = {
@@ -191,6 +212,7 @@ export const EMPTY_LAYOUT: LayoutProject = {
   calibration: null,
   arrays: [],
   shadowZones: [],
+  freePanels: [],
 };
 
 // ============================================================

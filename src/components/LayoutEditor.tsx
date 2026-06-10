@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import type { PanelSpec, LayoutProject, PanelArray, ShadowZone } from "../types";
+import type { PanelSpec, LayoutProject, PanelArray, ShadowZone, FreePanel } from "../types";
 import { cellKey } from "../types";
-import { shadedCellKeys } from "../calc/shadow";
+import { shadedCellKeys, pointInZones } from "../calc/shadow";
 import { fileToScaledDataUrl } from "../utils/image";
 import { uid } from "../store";
 
@@ -26,9 +26,10 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgReady, setImgReady] = useState(false);
   const [view, setView] = useState<View>({ tx: 40, ty: 40, zoom: 0.5 });
-  const [mode, setMode] = useState<"pan" | "calibrate" | "select" | "shadow">("pan");
+  const [mode, setMode] = useState<"pan" | "calibrate" | "select" | "shadow" | "remove">("pan");
   const [calibPts, setCalibPts] = useState<{ x: number; y: number }[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedFreeId, setSelectedFreeId] = useState<string | null>(null);
   const [shadowDraft, setShadowDraft] = useState<ShadowZone | null>(null);
 
   // 配置フォーム
@@ -103,6 +104,19 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     [panels, pixelsPerMeter]
   );
 
+  // 単独パネルの表示寸法(px)
+  const freePanelPx = useCallback(
+    (fp: { panelId: string; orientation: "portrait" | "landscape" }) => {
+      const panel = panels.find((p) => p.id === fp.panelId);
+      const lenM = (panel?.lengthMm ?? 1700) / 1000;
+      const widM = (panel?.widthMm ?? 1000) / 1000;
+      const pw = (fp.orientation === "portrait" ? widM : lenM) * pixelsPerMeter;
+      const ph = (fp.orientation === "portrait" ? lenM : widM) * pixelsPerMeter;
+      return { pw, ph };
+    },
+    [panels, pixelsPerMeter]
+  );
+
   // --- 描画 ---
   const draw = useCallback(() => {
     const c = canvasRef.current;
@@ -137,11 +151,21 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
       ctx.rotate((arr.rotationDeg * Math.PI) / 180);
       const selected = arr.id === selectedId;
       const keep = new Set(arr.keepCells ?? []);
+      const removed = new Set(arr.removedCells ?? []);
       const shaded = shadedCellKeys(arr, dims, zones);
       for (let r = 0; r < arr.rows; r++) {
         for (let col = 0; col < arr.cols; col++) {
           const x = col * (pw + gapPx);
           const y = r * (ph + gapPx);
+          // 撤去セルは空き枠（破線）で表示し、カウントしない
+          if (removed.has(cellKey(r, col))) {
+            ctx.strokeStyle = "#64748b";
+            ctx.lineWidth = 1 / view.zoom;
+            ctx.setLineDash([4 / view.zoom, 3 / view.zoom]);
+            ctx.strokeRect(x, y, pw, ph);
+            ctx.setLineDash([]);
+            continue;
+          }
           const isKeep = keep.has(cellKey(r, col));
           ctx.fillStyle = (isKeep ? KEEP_COLOR : arr.color) + (isKeep ? "66" : "44");
           ctx.strokeStyle = isKeep ? KEEP_COLOR : selected ? "#fff" : arr.color;
@@ -162,6 +186,33 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
         ctx.strokeStyle = "#fff";
         ctx.setLineDash([6 / view.zoom, 4 / view.zoom]);
         ctx.strokeRect(-4, -4, totalW + 8, totalH + 8);
+        ctx.setLineDash([]);
+      }
+      ctx.restore();
+    }
+
+    // 単独パネル
+    for (const fp of layout.freePanels ?? []) {
+      const { pw, ph } = freePanelPx(fp);
+      ctx.save();
+      ctx.translate(fp.posXpx, fp.posYpx);
+      ctx.rotate((fp.rotationDeg * Math.PI) / 180);
+      const sel = fp.id === selectedFreeId;
+      ctx.fillStyle = fp.color + "66";
+      ctx.strokeStyle = sel ? "#fff" : fp.color;
+      ctx.lineWidth = (sel ? 2.5 : 1.5) / view.zoom;
+      ctx.fillRect(-pw / 2, -ph / 2, pw, ph);
+      ctx.strokeRect(-pw / 2, -ph / 2, pw, ph);
+      // 影
+      const ctr = { x: fp.posXpx, y: fp.posYpx };
+      if (pointInZones(ctr.x, ctr.y, zones)) {
+        ctx.fillStyle = "rgba(15,23,42,0.55)";
+        ctx.fillRect(-pw / 2, -ph / 2, pw, ph);
+      }
+      if (sel) {
+        ctx.strokeStyle = "#fff";
+        ctx.setLineDash([6 / view.zoom, 4 / view.zoom]);
+        ctx.strokeRect(-pw / 2 - 4, -ph / 2 - 4, pw + 8, ph + 8);
         ctx.setLineDash([]);
       }
       ctx.restore();
@@ -198,7 +249,7 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     }
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
-  }, [view, rot, layout, selectedId, calibPts, shadowDraft, arrayPanelPx]);
+  }, [view, rot, layout, selectedId, selectedFreeId, calibPts, shadowDraft, arrayPanelPx, freePanelPx]);
 
   useEffect(() => {
     draw();
@@ -222,13 +273,29 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
 
   // --- マウス操作 ---
   const dragRef = useRef<{
-    kind: "pan" | "array";
+    kind: "pan" | "array" | "free";
     startSx: number;
     startSy: number;
     orig: { tx: number; ty: number } | { px: number; py: number };
     arrId?: string;
+    freeId?: string;
   } | null>(null);
   const shadowStartRef = useRef<{ x: number; y: number } | null>(null);
+
+  function hitFree(ix: number, iy: number): FreePanel | null {
+    const fps = layout.freePanels ?? [];
+    for (let i = fps.length - 1; i >= 0; i--) {
+      const fp = fps[i];
+      const { pw, ph } = freePanelPx(fp);
+      const dx = ix - fp.posXpx;
+      const dy = iy - fp.posYpx;
+      const a = (-fp.rotationDeg * Math.PI) / 180;
+      const lx = Math.cos(a) * dx - Math.sin(a) * dy;
+      const ly = Math.sin(a) * dx + Math.cos(a) * dy;
+      if (Math.abs(lx) <= pw / 2 && Math.abs(ly) <= ph / 2) return fp;
+    }
+    return null;
+  }
 
   function rectFrom(a: { x: number; y: number }, b: { x: number; y: number }): ShadowZone {
     return {
@@ -290,6 +357,18 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     });
   }
 
+  function toggleRemove(arr: PanelArray, r: number, col: number) {
+    const key = cellKey(r, col);
+    const removed = new Set(arr.removedCells ?? []);
+    if (removed.has(key)) removed.delete(key);
+    else removed.add(key);
+    patch({
+      arrays: layout.arrays.map((a) =>
+        a.id === arr.id ? { ...a, removedCells: [...removed] } : a
+      ),
+    });
+  }
+
   function setAllCells(arrId: string, keepAll: boolean) {
     patch({
       arrays: layout.arrays.map((a) => {
@@ -340,6 +419,16 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
       return;
     }
 
+    if (mode === "remove") {
+      const img = screenToImage(sx, sy);
+      const cell = hitCell(img.x, img.y);
+      if (cell) {
+        setSelectedId(cell.arr.id);
+        toggleRemove(cell.arr, cell.r, cell.col);
+      }
+      return;
+    }
+
     if (mode === "calibrate") {
       const p = screenToImage(sx, sy);
       const next = [...calibPts, p];
@@ -360,9 +449,23 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     }
 
     const img = screenToImage(sx, sy);
+    const free = hitFree(img.x, img.y);
+    if (free) {
+      setSelectedFreeId(free.id);
+      setSelectedId(null);
+      dragRef.current = {
+        kind: "free",
+        startSx: sx,
+        startSy: sy,
+        orig: { px: free.posXpx, py: free.posYpx },
+        freeId: free.id,
+      };
+      return;
+    }
     const hit = hitArray(img.x, img.y);
     if (hit) {
       setSelectedId(hit.id);
+      setSelectedFreeId(null);
       dragRef.current = {
         kind: "array",
         startSx: sx,
@@ -372,6 +475,7 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
       };
     } else {
       setSelectedId(null);
+      setSelectedFreeId(null);
       dragRef.current = {
         kind: "pan",
         startSx: sx,
@@ -413,6 +517,18 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
           a.id === d.arrId
             ? { ...a, posXpx: orig.px + idx, posYpx: orig.py + idy }
             : a
+        ),
+      });
+    } else if (d.kind === "free" && d.freeId && "px" in orig) {
+      const cos = Math.cos(rot);
+      const sin = Math.sin(rot);
+      const idx = (cos * dsx + sin * dsy) / view.zoom;
+      const idy = (-sin * dsx + cos * dsy) / view.zoom;
+      patch({
+        freePanels: (layout.freePanels ?? []).map((f) =>
+          f.id === d.freeId
+            ? { ...f, posXpx: orig.px + idx, posYpx: orig.py + idy }
+            : f
         ),
       });
     }
@@ -507,8 +623,42 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     if (selectedId === id) setSelectedId(null);
   }
 
+  function addFreePanel() {
+    if (!formPanelId) {
+      alert("パネルを登録・選択してください");
+      return;
+    }
+    const center = screenToImage(
+      (canvasRef.current?.width ?? 600) / 2,
+      (canvasRef.current?.height ?? 600) / 2
+    );
+    const fp: FreePanel = {
+      id: uid("free"),
+      panelId: formPanelId,
+      orientation: formOrient,
+      posXpx: center.x,
+      posYpx: center.y,
+      rotationDeg: 0,
+      color: "#f472b6",
+    };
+    patch({ freePanels: [...(layout.freePanels ?? []), fp] });
+    setSelectedFreeId(fp.id);
+    setSelectedId(null);
+  }
+  function updateFree(id: string, p: Partial<FreePanel>) {
+    patch({ freePanels: (layout.freePanels ?? []).map((f) => (f.id === id ? { ...f, ...p } : f)) });
+  }
+  function deleteFree(id: string) {
+    patch({ freePanels: (layout.freePanels ?? []).filter((f) => f.id !== id) });
+    if (selectedFreeId === id) setSelectedFreeId(null);
+  }
+
   const selected = layout.arrays.find((a) => a.id === selectedId) ?? null;
-  const totalPanels = layout.arrays.reduce((s, a) => s + a.rows * a.cols, 0);
+  const selectedFree = (layout.freePanels ?? []).find((f) => f.id === selectedFreeId) ?? null;
+  const freeCount = (layout.freePanels ?? []).length;
+  const removedTotal = layout.arrays.reduce((s, a) => s + (a.removedCells?.length ?? 0), 0);
+  const arrayCells = layout.arrays.reduce((s, a) => s + a.rows * a.cols, 0);
+  const totalPanels = arrayCells - removedTotal + freeCount;
   const keepTotal = layout.arrays.reduce((s, a) => s + (a.keepCells?.length ?? 0), 0);
   const zones = layout.shadowZones ?? [];
   const shadedTotal = layout.arrays.reduce(
@@ -559,7 +709,7 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
             {layout.calibration
               ? `スケール: ${pixelsPerMeter.toFixed(1)} px/m`
               : "未校正（基準寸法を設定してください）"}
-            ／ 合計 {totalPanels} 枚（流用 {keepTotal} / 入換 {totalPanels - keepTotal}）
+            ／ 合計 {totalPanels} 枚（流用 {keepTotal}{removedTotal ? ` / 撤去 ${removedTotal}` : ""}{freeCount ? ` / 追加 ${freeCount}` : ""}）
           </span>
         </div>
 
@@ -639,6 +789,19 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
               </span>
             </div>
 
+            <h3>パネルの撤去（フェンス離隔など）</h3>
+            <div className="row">
+              <button
+                className={`btn small ${mode === "remove" ? "" : "secondary"}`}
+                onClick={() => setMode(mode === "remove" ? "pan" : "remove")}
+              >
+                {mode === "remove" ? "撤去モード：パネルをクリックで撤去/復活" : "パネルを撤去/復活"}
+              </button>
+              <span className="hint">
+                クリックでそのパネルを取り外し（破線の空き枠）。もう一度で復活。撤去分は枚数から除外。
+              </span>
+            </div>
+
             <h3>影ゾーン</h3>
             <div className="row">
               <button
@@ -673,7 +836,7 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
         <div className="card" style={{ padding: 0, overflow: "hidden" }}>
           <canvas
             ref={canvasRef}
-            style={{ display: "block", width: "100%", cursor: mode === "calibrate" || mode === "select" || mode === "shadow" ? "crosshair" : "grab" }}
+            style={{ display: "block", width: "100%", cursor: mode === "pan" ? "grab" : "crosshair" }}
             onMouseDown={onMouseDown}
             onMouseMove={onMouseMove}
             onMouseUp={onMouseUp}
@@ -722,6 +885,46 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
               </div>
               <div className="field" style={{ justifyContent: "flex-end" }}>
                 <button className="btn" onClick={addArray}>配列を追加</button>
+              </div>
+            </div>
+          )}
+
+          {panels.length > 0 && (
+            <div className="row" style={{ marginTop: 6 }}>
+              <button className="btn secondary" onClick={addFreePanel}>＋ 1枚追加（単独パネル）</button>
+              <span className="hint">
+                上の「パネル」「向き」で1枚だけ追加。ドラッグで移動・選択して回転/向き変更。
+                端の増設や、横置きの中に縦置きを混ぜる用。
+              </span>
+            </div>
+          )}
+
+          {selectedFree && (
+            <div style={{ marginTop: 12 }}>
+              <h3>選択中の単独パネル</h3>
+              <div className="form-grid">
+                <div className="field">
+                  <label>パネル</label>
+                  <select value={selectedFree.panelId} onChange={(e) => updateFree(selectedFree.id, { panelId: e.target.value })}>
+                    {panels.map((p) => (
+                      <option key={p.id} value={p.id}>{p.maker} {p.model}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>向き</label>
+                  <select value={selectedFree.orientation} onChange={(e) => updateFree(selectedFree.id, { orientation: e.target.value as "portrait" | "landscape" })}>
+                    <option value="portrait">縦置き</option>
+                    <option value="landscape">横置き</option>
+                  </select>
+                </div>
+                <div className="field" style={{ flex: 1, minWidth: 200 }}>
+                  <label>回転: {selectedFree.rotationDeg}°</label>
+                  <input type="range" min={-90} max={90} value={selectedFree.rotationDeg} onChange={(e) => updateFree(selectedFree.id, { rotationDeg: Number(e.target.value) })} />
+                </div>
+                <div className="field" style={{ justifyContent: "flex-end" }}>
+                  <button className="btn danger" onClick={() => deleteFree(selectedFree.id)}>このパネルを削除</button>
+                </div>
               </div>
             </div>
           )}

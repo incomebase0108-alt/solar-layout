@@ -58,7 +58,8 @@ function slotOf(arr: PanelArray, panels: PanelSpec[]): SlotInfo {
   const widM = m(panel?.widthMm ?? 1000);
   const slotW = arr.orientation === "portrait" ? widM : lenM;
   const slotH = arr.orientation === "portrait" ? lenM : widM;
-  const total = arr.rows * arr.cols;
+  const removed = arr.removedCells?.length ?? 0;
+  const total = arr.rows * arr.cols - removed;
   const keep = arr.keepCells?.length ?? 0;
   return {
     slotW,
@@ -79,7 +80,8 @@ export function currentSummary(
   let currentKw = 0;
   for (const arr of arrays) {
     const panel = panels.find((p) => p.id === arr.panelId);
-    const cells = arr.rows * arr.cols;
+    const removed = arr.removedCells?.length ?? 0;
+    const cells = arr.rows * arr.cols - removed; // 撤去分を除く
     totalCells += cells;
     const keep = arr.keepCells?.length ?? 0;
     keepCells += keep;

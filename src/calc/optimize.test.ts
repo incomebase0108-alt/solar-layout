@@ -28,6 +28,13 @@ describe("現状集計", () => {
     expect(s.totalCells).toBe(100);
     expect(s.currentKw).toBeCloseTo(40, 3); // 100*400/1000
   });
+
+  it("撤去セルは枚数・出力から除外", () => {
+    const withRemoved: PanelArray[] = [{ ...arrays[0], removedCells: ["0,0", "0,1", "0,2"] }];
+    const s = currentSummary(withRemoved, [base]);
+    expect(s.totalCells).toBe(97);
+    expect(s.currentKw).toBeCloseTo(38.8, 3); // 97*400/1000
+  });
 });
 
 describe("入換最適化", () => {

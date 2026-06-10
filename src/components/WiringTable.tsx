@@ -23,10 +23,11 @@ export function WiringTable({ plant, panels, pcsList, conditions, patchWiring }:
   const panel = panels.find((p) => p.id === w.panelId) ?? null;
   const pcs = pcsList.find((p) => p.id === w.pcsId) ?? null;
 
-  const layoutPanels = plant.layout.arrays.reduce(
-    (s, a) => s + a.rows * a.cols,
-    0
-  );
+  const layoutPanels =
+    plant.layout.arrays.reduce(
+      (s, a) => s + a.rows * a.cols - (a.removedCells?.length ?? 0),
+      0
+    ) + (plant.layout.freePanels?.length ?? 0);
   const totalPanels = w.totalPanelsOverride ?? layoutPanels;
 
   const sizing = useMemo(

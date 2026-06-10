@@ -61,8 +61,10 @@ export function shadedCellKeys(
 ): Set<string> {
   const set = new Set<string>();
   if (!zones.length) return set;
+  const removed = new Set(arr.removedCells ?? []);
   for (let r = 0; r < arr.rows; r++) {
     for (let c = 0; c < arr.cols; c++) {
+      if (removed.has(`${r},${c}`)) continue;
       const ctr = cellCenterImage(arr, r, c, dims);
       if (pointInZones(ctr.x, ctr.y, zones)) set.add(`${r},${c}`);
     }
@@ -82,7 +84,7 @@ export function countShadedPanels(
   for (const arr of arrays) {
     const panel = panels.find((p) => p.id === arr.panelId);
     const dims = panelPxDims(arr, panel, ppm);
-    n += shadedCellKeys(arr, dims, zones).size;
+    n += shadedCellKeys(arr, dims, zones).size; // 撤去セルは除外済み
   }
   return n;
 }
