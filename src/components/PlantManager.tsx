@@ -1,5 +1,6 @@
 import { useState } from "react";
 import type { PowerPlant } from "../types";
+import { exportAll, importAll } from "../utils/backup";
 
 interface Props {
   plants: PowerPlant[];
@@ -28,8 +29,38 @@ export function PlantManager({
   const [newName, setNewName] = useState("");
   const current = plants.find((p) => p.id === currentId);
 
+  async function onImport(e: React.ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    if (!file) return;
+    if (!confirm("読込むと現在のデータ（マスタ・全発電所）が置き換わります。よろしいですか？")) return;
+    try {
+      await importAll(file);
+      alert("読込みました。画面を更新します。");
+      window.location.reload();
+    } catch (err) {
+      alert(err instanceof Error ? err.message : "読込に失敗しました。");
+    }
+  }
+
   return (
     <>
+      <div className="card">
+        <h2>データの保存 / 読込</h2>
+        <div className="row">
+          <button className="btn secondary small" onClick={exportAll}>
+            バックアップを保存（JSON）
+          </button>
+          <label className="btn secondary small" style={{ cursor: "pointer" }}>
+            バックアップを読込
+            <input type="file" accept="application/json,.json" onChange={onImport} style={{ display: "none" }} />
+          </label>
+          <span className="hint">
+            マスタ＋全発電所を1ファイルに保存。端末間の移行・バックアップに。
+          </span>
+        </div>
+      </div>
+
       <div className="card">
         <h2>発電所の登録</h2>
         <div className="row">

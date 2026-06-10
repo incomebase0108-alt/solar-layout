@@ -30,7 +30,7 @@ export default function App() {
 
   return (
     <div className="app">
-      <header className="app-header">
+      <header className="app-header no-print">
         <h1>☀ ソーラーレイアウト設計支援</h1>
         <span className="sub">発電所別 図面 ＆ パワコン配線</span>
         <span className="spacer" />
@@ -47,7 +47,7 @@ export default function App() {
         </div>
       </header>
 
-      <nav className="tabs">
+      <nav className="tabs no-print">
         {TABS.map((t) => (
           <button
             key={t.key}

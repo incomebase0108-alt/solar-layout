@@ -15,7 +15,7 @@ import { DEFAULT_CONDITIONS, EMPTY_LAYOUT, EMPTY_WIRING } from "./types";
 //   - 将来 API/DB に差し替えやすいよう薄いフックに閉じ込める
 // ============================================================
 
-const KEYS = {
+export const KEYS = {
   panels: "solar-layout.panels",
   pcs: "solar-layout.pcs",
   conditions: "solar-layout.conditions",

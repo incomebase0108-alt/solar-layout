@@ -64,7 +64,13 @@ export function WiringTable({ plant, panels, pcsList, conditions, patchWiring }:
   return (
     <>
       <div className="card">
-        <h2>配線設定 — {plant.name}</h2>
+        <div className="row">
+          <h2 style={{ margin: 0 }}>配線設定 — {plant.name}</h2>
+          <span className="spacer" />
+          <button className="btn secondary small no-print" onClick={() => window.print()}>
+            印刷 / PDF
+          </button>
+        </div>
         <div className="form-grid">
           <div className="field">
             <label>系統共通パネル</label>

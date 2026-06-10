@@ -150,3 +150,25 @@ table.list tr:hover td { background: var(--panel-2); }
 }
 .empty { color: var(--muted); font-size: 13px; padding: 12px 0; }
 .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+
+/* ===== 印刷 / PDF ===== */
+@media print {
+  body { background: #fff; color: #000; }
+  .app { max-width: none; padding: 0; }
+  .no-print { display: none !important; }
+  nav.tabs, header.app-header { display: none !important; }
+  .card {
+    background: #fff;
+    border: 1px solid #999;
+    color: #000;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .card h2, .card h3 { color: #000; }
+  .metric { background: #fff; border: 1px solid #999; }
+  .metric .label, .metric .value small, .hint { color: #333; }
+  table.list th, table.list td { border-bottom: 1px solid #999; }
+  table.list th { color: #333; }
+  .badge { border-color: #999; color: #000; }
+  .warn-item { background: #fff8e1; color: #7a5b00; border-color: #c79100; }
+}

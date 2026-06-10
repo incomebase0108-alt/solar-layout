@@ -49,7 +49,13 @@ export function Optimizer({ plant, panels }: Props) {
   return (
     <>
       <div className="card">
-        <h2>入換レイアウト最適化 — {plant.name}</h2>
+        <div className="row">
+          <h2 style={{ margin: 0 }}>入換レイアウト最適化 — {plant.name}</h2>
+          <span className="spacer" />
+          <button className="btn secondary small no-print" onClick={() => window.print()}>
+            印刷 / PDF
+          </button>
+        </div>
         <div className="form-grid">
           <div className="field">
             <label>基準パネル（既設）</label>

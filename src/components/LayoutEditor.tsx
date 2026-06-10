@@ -401,6 +401,17 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
     patch({ imageRotationDeg: (layout.imageRotationDeg + delta + 360) % 360 });
   }
 
+  function exportPng() {
+    const c = canvasRef.current;
+    if (!c) return;
+    draw(); // 最新状態で描画してから書き出し
+    const url = c.toDataURL("image/png");
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `layout_${new Date().toISOString().slice(0, 10)}.png`;
+    a.click();
+  }
+
   function addArray() {
     if (!formPanelId) {
       alert("パネルを登録・選択してください");
@@ -462,6 +473,11 @@ export function LayoutEditor({ panels, layout, patch }: Props) {
           {imgReady && (
             <button className="btn secondary small" onClick={() => imgRef.current && fitToView(imgRef.current)}>
               全体表示
+            </button>
+          )}
+          {layout.imageDataUrl && (
+            <button className="btn secondary small" onClick={exportPng}>
+              図面をPNG保存
             </button>
           )}
           <span className="spacer" />
