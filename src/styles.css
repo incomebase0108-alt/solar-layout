@@ -183,6 +183,17 @@ table.list tr:hover td { background: var(--panel-2); }
 .empty { color: var(--muted); font-size: 13px; padding: 12px 0; }
 .hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
 
+/* 折りたたみ（使用頻度の低い機能の収納） */
+details.fold { margin-top: 10px; }
+details.fold > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  user-select: none;
+}
+details.fold > summary:hover { color: var(--text); }
+details.fold[open] > summary { color: var(--accent); }
+
 /* ===== 印刷 / PDF ===== */
 @media print {
   body { background: #fff; color: #000; }

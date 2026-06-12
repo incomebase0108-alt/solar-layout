@@ -1594,39 +1594,20 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
           )}
         </div>
 
-        <h3>または写真をアップロード</h3>
-        <div className="row">
-          <label className="btn secondary small" style={{ cursor: "pointer" }}>
-            写真をアップロード
-            <input type="file" accept="image/*" onChange={onUpload} style={{ display: "none" }} />
-          </label>
-          {imgReady && (
-            <button className="btn secondary small" onClick={() => imgRef.current && fitToView(imgRef.current)}>
-              全体表示
-            </button>
-          )}
+        {/* 通常は住所→地図取得で足りるため、アップロードと手動校正は折りたたみに収納 */}
+        <details className="fold">
+          <summary>写真をアップロードして使う（航空写真が古い・粗いとき用）</summary>
+          <div className="row" style={{ marginTop: 8 }}>
+            <label className="btn secondary small" style={{ cursor: "pointer" }}>
+              写真をアップロード
+              <input type="file" accept="image/*" onChange={onUpload} style={{ display: "none" }} />
+            </label>
+            <span className="hint">
+              アップロードした写真は縮尺が不明なため、下の「基準寸法を設定」で校正してください（地図取得なら自動）。
+            </span>
+          </div>
           {layout.imageDataUrl && (
-            <button className="btn secondary small" onClick={exportPng}>
-              図面をPNG保存
-            </button>
-          )}
-          <span className="spacer" />
-          <span className="hint">
-            {layout.calibration
-              ? `スケール: ${pixelsPerMeter.toFixed(1)} px/m`
-              : "未校正（基準寸法を設定してください）"}
-            ／ 合計 {totalPanels} 枚（流用 {keepTotal}{removedTotal ? ` / 撤去 ${removedTotal}` : ""}{freeCount ? ` / 追加 ${freeCount}` : ""}）
-          </span>
-        </div>
-
-        {!layout.imageDataUrl && (
-          <div className="empty">住所から地図を取得するか、写真をアップロードすると、ここに表示されます。</div>
-        )}
-
-        {layout.imageDataUrl && (
-          <>
-            <h3>スケール校正</h3>
-            <div className="row">
+            <div className="row" style={{ marginTop: 8 }}>
               <button
                 className={`btn small ${mode === "calibrate" ? "" : "secondary"}`}
                 onClick={() => {
@@ -1645,7 +1626,35 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
                 既知の長さ（パネル1枚の実寸や敷地の一辺）の両端をクリック→実長(m)を入力
               </span>
             </div>
+          )}
+        </details>
 
+        {layout.imageDataUrl && (
+          <div className="row" style={{ marginTop: 8 }}>
+            {imgReady && (
+              <button className="btn secondary small" onClick={() => imgRef.current && fitToView(imgRef.current)}>
+                全体表示
+              </button>
+            )}
+            <button className="btn secondary small" onClick={exportPng}>
+              図面をPNG保存
+            </button>
+            <span className="spacer" />
+            <span className="hint">
+              {layout.calibration
+                ? `スケール: ${pixelsPerMeter.toFixed(1)} px/m`
+                : "未校正（基準寸法を設定してください）"}
+              ／ 合計 {totalPanels} 枚（流用 {keepTotal}{removedTotal ? ` / 撤去 ${removedTotal}` : ""}{freeCount ? ` / 追加 ${freeCount}` : ""}）
+            </span>
+          </div>
+        )}
+
+        {!layout.imageDataUrl && (
+          <div className="empty">住所から地図を取得するか、写真をアップロードすると、ここに表示されます。</div>
+        )}
+
+        {layout.imageDataUrl && (
+          <>
             <h3>流用パネルの指定（変更しないパネル）</h3>
             <div className="row">
               <button
