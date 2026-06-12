@@ -215,6 +215,46 @@ table.list tr:hover td { background: var(--panel-2); }
 }
 .phase-switch > button.active small { color: #0b3a52; }
 
+/* 検討候補（プラン）切替バー */
+.candidate-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.cand-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 6px;
+}
+.cand-pill.active {
+  border-color: var(--accent);
+  background: rgba(56, 189, 248, 0.15);
+}
+.cand-pill button {
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+}
+.cand-pill:not(.active) button.cand-name { color: var(--muted); }
+.cand-pill button.cand-icon {
+  color: var(--muted);
+  padding: 2px 4px;
+}
+.cand-pill button.cand-icon:hover { color: var(--text); }
+
 /* 折りたたみ（使用頻度の低い機能の収納） */
 details.fold { margin-top: 10px; }
 details.fold > summary {

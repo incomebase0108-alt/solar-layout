@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { PanelSpec, LayoutProject, PanelArray, ShadowZone, FreePanel, LegendItem, PcsUnitLine, PcsSpec } from "../types";
 import { cellKey, arrayGaps } from "../types";
 import { shadedCellKeys, pointInZones } from "../calc/shadow";
@@ -24,6 +24,10 @@ interface Props {
   plantName?: string;
   /** 顧客名（工事説明書の表紙に使用） */
   customerName?: string;
+  /** 検討候補（プラン）切替バー。②変更の検討フェーズの先頭に表示する */
+  candidateBar?: ReactNode;
+  /** 検討候補を使っているか（候補の切替・追加で再マウントしても②フェーズを維持するため） */
+  hasCandidates?: boolean;
 }
 
 interface View {
@@ -41,7 +45,7 @@ function normalizeDeg(d: number): number {
   return x;
 }
 
-export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, pcsUnits, pcsList, plantName, customerName }: Props) {
+export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, pcsUnits, pcsList, plantName, customerName, candidateBar, hasCandidates }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgReady, setImgReady] = useState(false);
@@ -79,8 +83,10 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   const [view, setView] = useState<View>({ tx: 40, ty: 40, zoom: 0.5 });
   const [mode, setMode] = useState<"pan" | "calibrate" | "select" | "shadow" | "remove" | "scan" | "keeprect" | "removerect" | "cellpanel">("pan");
   // 作業フェーズ：①既設の設定（現況図面づくり）と ②変更の検討（流用・撤去・結線）を分けて表示する。
-  // 基準登録済みなら変更フェーズから始める。
-  const [phase, setPhase] = useState<"kisetsu" | "henkou">(() => (layout.baseline ? "henkou" : "kisetsu"));
+  // 基準登録済み or 検討候補を使用中なら変更フェーズから始める。
+  const [phase, setPhase] = useState<"kisetsu" | "henkou">(() =>
+    layout.baseline || hasCandidates ? "henkou" : "kisetsu"
+  );
   function switchPhase(p: "kisetsu" | "henkou") {
     setPhase(p);
     setMode("pan"); // フェーズ専用の編集モードを持ち越さない
@@ -156,7 +162,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
 
   // 配置フォーム
   const [formPanelId, setFormPanelId] = useState(panels[0]?.id ?? "");
-  const [formOrient, setFormOrient] = useState<"portrait" | "landscape">("portrait");
+  const [formOrient, setFormOrient] = useState<"portrait" | "landscape">("landscape"); // 既定は横置き
   const [formRows, setFormRows] = useState(10);
   const [formCols, setFormCols] = useState(10);
   const [formGapX, setFormGapX] = useState(0.02); // 横方向（列の左右）の隙間 m
@@ -1693,6 +1699,7 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
       {/* 変更の検討：既設図面の上に流用/入換・撤去・影を重ねて指定する */}
       {phase === "henkou" && layout.imageDataUrl && (
         <div className="card">
+          {candidateBar}
           <h2>変更の検討（流用・撤去・影）</h2>
           <>
             <h3>流用パネルの指定（変更しないパネル）</h3>

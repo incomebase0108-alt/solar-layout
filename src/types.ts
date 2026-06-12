@@ -285,6 +285,25 @@ export const EMPTY_LAYOUT: LayoutProject = {
   freePanels: [],
 };
 
+/**
+ * 変更の検討の「候補」（プラン）。
+ * 既設側（航空写真・校正・基準）は発電所で共通とし、
+ * 変更内容（配列のマーク・新設・影・結線手編集・凡例）とパワコン構成を候補ごとに持つ。
+ * アクティブな候補の内容は plant.layout / plant.pcsUnits（作業コピー）に展開され、
+ * 候補を切り替えるときに作業コピー⇔候補の保存・読込を行う。
+ */
+export interface PlanCandidate {
+  id: string;
+  /** 表示名（候補1, 候補2, …。変更可） */
+  name: string;
+  arrays: PanelArray[];
+  freePanels?: FreePanel[];
+  shadowZones?: ShadowZone[];
+  wiringOverrides?: Record<string, WiringOverride>;
+  legend?: LegendItem[];
+  pcsUnits?: PcsUnitLine[];
+}
+
 // ============================================================
 // 発電所（サイト）モデル
 //   発電所ごとに 図面（現況レイアウト）と 配線設定 を持つ。
@@ -350,8 +369,12 @@ export interface PowerPlant {
   layout: LayoutProject;
   /** 配線設定 */
   wiring: WiringPlan;
-  /** パワコン構成（機種混在・台数指定）。任意。 */
+  /** パワコン構成（機種混在・台数指定）。任意。アクティブ候補の作業コピー。 */
   pcsUnits?: PcsUnitLine[];
+  /** 変更の検討の候補一覧（任意）。未使用なら作業コピーのみで運用（従来通り）。 */
+  candidates?: PlanCandidate[];
+  /** アクティブな候補の id */
+  currentCandidateId?: string;
 }
 
 /**

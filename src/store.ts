@@ -7,6 +7,7 @@ import type {
   PowerPlant,
   WiringPlan,
   CostRates,
+  PlanCandidate,
 } from "./types";
 import {
   DEFAULT_CONDITIONS,
@@ -604,6 +605,122 @@ export function usePlants() {
     [currentId]
   );
 
+  // ===== 変更の検討の候補（プラン）管理 =====
+  // アクティブ候補の内容は layout / pcsUnits（作業コピー）に展開して既存画面をそのまま使う。
+  // 候補の保存は「切り替え時に作業コピーを書き戻す」方式。
+
+  /** 作業コピー（現在編集中の変更内容）を候補のデータ形式で取り出す。 */
+  const workingPlan = (pl: PowerPlant): Omit<PlanCandidate, "id" | "name"> => ({
+    arrays: pl.layout.arrays,
+    freePanels: pl.layout.freePanels,
+    shadowZones: pl.layout.shadowZones,
+    wiringOverrides: pl.layout.wiringOverrides,
+    legend: pl.layout.legend,
+    pcsUnits: pl.pcsUnits,
+  });
+
+  /** 作業コピーをアクティブ候補へ書き戻す。候補未使用なら何もしない。 */
+  const saveWorkingToActive = (pl: PowerPlant): PowerPlant => {
+    if (!pl.candidates?.length || !pl.currentCandidateId) return pl;
+    return {
+      ...pl,
+      candidates: pl.candidates.map((c) =>
+        c.id === pl.currentCandidateId ? { ...c, ...workingPlan(pl) } : c
+      ),
+    };
+  };
+
+  /** 候補が無い発電所に、現在の内容を「候補1」として作る。 */
+  const ensureCandidates = (pl: PowerPlant): PowerPlant => {
+    if (pl.candidates?.length) return pl;
+    const first: PlanCandidate = { id: uid("cand"), name: "候補1", ...workingPlan(pl) };
+    return { ...pl, candidates: [first], currentCandidateId: first.id };
+  };
+
+  /** 候補のデータを作業コピーへ展開する。 */
+  const loadCandidate = (pl: PowerPlant, c: PlanCandidate): PowerPlant => ({
+    ...pl,
+    layout: {
+      ...pl.layout,
+      arrays: c.arrays,
+      freePanels: c.freePanels ?? [],
+      shadowZones: c.shadowZones ?? [],
+      wiringOverrides: c.wiringOverrides,
+      legend: c.legend,
+    },
+    pcsUnits: c.pcsUnits,
+    currentCandidateId: c.id,
+  });
+
+  /** 現在の内容のコピーで新しい候補を作り、それをアクティブにする。 */
+  const addCandidate = useCallback(() => {
+    setPlants((prev) =>
+      prev.map((pl) => {
+        if (pl.id !== currentId) return pl;
+        const base = saveWorkingToActive(ensureCandidates(pl));
+        const n = (base.candidates?.length ?? 0) + 1;
+        const copy: PlanCandidate = {
+          id: uid("cand"),
+          name: `候補${n}`,
+          // 流用/撤去マークや構成を引き継いだコピーから検討を始める
+          ...(JSON.parse(JSON.stringify(workingPlan(base))) as Omit<PlanCandidate, "id" | "name">),
+        };
+        return { ...base, candidates: [...(base.candidates ?? []), copy], currentCandidateId: copy.id };
+      })
+    );
+  }, [currentId]);
+
+  /** 候補を切り替える（作業コピーを書き戻してから読込）。 */
+  const switchCandidate = useCallback(
+    (candId: string) => {
+      setPlants((prev) =>
+        prev.map((pl) => {
+          if (pl.id !== currentId) return pl;
+          const saved = saveWorkingToActive(ensureCandidates(pl));
+          const c = saved.candidates?.find((x) => x.id === candId);
+          return c ? loadCandidate(saved, c) : saved;
+        })
+      );
+    },
+    [currentId]
+  );
+
+  const renameCandidate = useCallback(
+    (candId: string, name: string) => {
+      setPlants((prev) =>
+        prev.map((pl) =>
+          pl.id === currentId
+            ? {
+                ...pl,
+                candidates: (pl.candidates ?? []).map((c) =>
+                  c.id === candId ? { ...c, name } : c
+                ),
+              }
+            : pl
+        )
+      );
+    },
+    [currentId]
+  );
+
+  /** 候補を削除する。アクティブ候補を消した場合は残りの先頭を読み込む。最後の1つは消せない。 */
+  const deleteCandidate = useCallback(
+    (candId: string) => {
+      setPlants((prev) =>
+        prev.map((pl) => {
+          if (pl.id !== currentId) return pl;
+          const list = pl.candidates ?? [];
+          if (list.length <= 1) return pl;
+          const rest = list.filter((c) => c.id !== candId);
+          let next: PowerPlant = { ...pl, candidates: rest };
+          if (pl.currentCandidateId === candId) next = loadCandidate(next, rest[0]);
+          return next;
+        })
+      );
+    },
+    [currentId]
+  );
+
   return {
     plants,
     current,
@@ -614,5 +731,9 @@ export function usePlants() {
     deletePlant,
     patchLayout,
     patchWiring,
+    addCandidate,
+    switchCandidate,
+    renameCandidate,
+    deleteCandidate,
   };
 }

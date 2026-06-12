@@ -8,6 +8,7 @@ import { PcsComposer } from "./components/PcsComposer";
 import { CostEstimator } from "./components/CostEstimator";
 import { Guide } from "./components/Guide";
 import { StepNav } from "./components/StepNav";
+import { CandidateBar } from "./components/CandidateBar";
 import { usePanels, usePcsList, useConditions, usePlants, useCostRates } from "./store";
 
 const GUIDE_KEY = "solar-layout.onboarded";
@@ -62,6 +63,17 @@ export default function App() {
 
       <StepNav tab={tab} setTab={(t) => setTab(t as Tab)} current={current ?? null} />
 
+      {/* 候補（プラン）切替バー。図面タブでは②変更の検討フェーズ内に表示するため LayoutEditor へ渡す */}
+      {current && (tab === "pcsunits" || tab === "cost") && (
+        <CandidateBar
+          plant={current}
+          switchCandidate={plantStore.switchCandidate}
+          addCandidate={plantStore.addCandidate}
+          renameCandidate={plantStore.renameCandidate}
+          deleteCandidate={plantStore.deleteCandidate}
+        />
+      )}
+
       {tab === "plant" && (
         <PlantManager
           plants={plantStore.plants}
@@ -74,6 +86,7 @@ export default function App() {
       )}
       {tab === "layout" && current && (
         <LayoutEditor
+          key={current.id + ":" + (current.currentCandidateId ?? "")}
           panels={panelStore.panels}
           layout={current.layout}
           patch={plantStore.patchLayout}
@@ -82,6 +95,16 @@ export default function App() {
           pcsList={pcsStore.pcsList}
           plantName={current.name}
           customerName={current.customerName}
+          hasCandidates={(current.candidates?.length ?? 0) > 0}
+          candidateBar={
+            <CandidateBar
+              plant={current}
+              switchCandidate={plantStore.switchCandidate}
+              addCandidate={plantStore.addCandidate}
+              renameCandidate={plantStore.renameCandidate}
+              deleteCandidate={plantStore.deleteCandidate}
+            />
+          }
         />
       )}
       {tab === "pcsunits" && current && (
@@ -95,7 +118,7 @@ export default function App() {
       )}
       {tab === "cost" && current && (
         <CostEstimator
-          key={current.id}
+          key={current.id + ":" + (current.currentCandidateId ?? "")}
           plant={current}
           panels={panelStore.panels}
           pcsList={pcsStore.pcsList}
