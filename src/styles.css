@@ -55,6 +55,38 @@ nav.tabs button.active {
   border-bottom-color: var(--accent);
 }
 
+/* ===== 作業フロー順ナビ（StepNav） ===== */
+nav.stepnav { align-items: center; flex-wrap: wrap; }
+nav.stepnav .step-num {
+  display: inline-block;
+  margin-right: 4px;
+  color: var(--accent);
+  font-weight: 700;
+}
+nav.stepnav button.active .step-num { color: var(--accent); }
+nav.stepnav .stepnav-label {
+  color: var(--muted);
+  font-size: 12px;
+  padding-right: 2px;
+}
+nav.stepnav button.master-tab {
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.next-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: -8px 0 16px;
+  font-size: 13px;
+}
+.next-hint .next-hint-text { flex: 1; }
+
 .card {
   background: var(--panel);
   border: 1px solid var(--border);
