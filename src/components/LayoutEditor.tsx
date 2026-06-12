@@ -78,6 +78,17 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   }
   const [view, setView] = useState<View>({ tx: 40, ty: 40, zoom: 0.5 });
   const [mode, setMode] = useState<"pan" | "calibrate" | "select" | "shadow" | "remove" | "scan" | "keeprect" | "removerect" | "cellpanel">("pan");
+  // 作業フェーズ：①既設の設定（現況図面づくり）と ②変更の検討（流用・撤去・結線）を分けて表示する。
+  // 基準登録済みなら変更フェーズから始める。
+  const [phase, setPhase] = useState<"kisetsu" | "henkou">(() => (layout.baseline ? "henkou" : "kisetsu"));
+  function switchPhase(p: "kisetsu" | "henkou") {
+    setPhase(p);
+    setMode("pan"); // フェーズ専用の編集モードを持ち越さない
+    if (p === "kisetsu") {
+      setWireMode(false);
+      setWireEdit(false);
+    }
+  }
   // セル単位でパネル型式を変更するときの割り当て先パネルid
   const [cellPanelTarget, setCellPanelTarget] = useState(() => panels[0]?.id ?? "");
   // 範囲ドラッグで流用/入換を一括指定するときの値（true=流用にする, false=入換にする）
@@ -1549,8 +1560,26 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
 
   return (
     <>
+      {/* 作業フェーズの切替：既設づくりと変更検討を混ぜない */}
+      <div className="phase-switch no-print">
+        <button className={phase === "kisetsu" ? "active" : ""} onClick={() => switchPhase("kisetsu")}>
+          ① 既設の設定
+          <small>地図取得・スキャン・現況図面</small>
+        </button>
+        <button className={phase === "henkou" ? "active" : ""} onClick={() => switchPhase("henkou")}>
+          ② 変更の検討
+          <small>流用/入換・撤去・結線図・前後比較</small>
+        </button>
+        <span className="hint" style={{ flex: 1 }}>
+          {phase === "kisetsu"
+            ? "まず既設（現況）の図面を作り、「現状を基準登録」したら ② へ。"
+            : "既設図面の上で入換・撤去を指定し、結線図・前後比較・PDFを作ります。"}
+        </span>
+      </div>
+
+      {phase === "kisetsu" && (
       <div className="card">
-        <h2>現況レイアウト（航空写真トレース）</h2>
+        <h2>既設の設定（現況図面づくり）</h2>
 
         <h3>住所から地図を取得（地理院タイル）</h3>
         <div className="row" style={{ alignItems: "flex-end", flexWrap: "wrap" }}>
@@ -1652,8 +1681,19 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
         {!layout.imageDataUrl && (
           <div className="empty">住所から地図を取得するか、写真をアップロードすると、ここに表示されます。</div>
         )}
+      </div>
+      )}
 
-        {layout.imageDataUrl && (
+      {phase === "henkou" && !layout.imageDataUrl && (
+        <div className="card">
+          <div className="empty">先に「① 既設の設定」で図面（地図取得 または 写真）を作ってください。</div>
+        </div>
+      )}
+
+      {/* 変更の検討：既設図面の上に流用/入換・撤去・影を重ねて指定する */}
+      {phase === "henkou" && layout.imageDataUrl && (
+        <div className="card">
+          <h2>変更の検討（流用・撤去・影）</h2>
           <>
             <h3>流用パネルの指定（変更しないパネル）</h3>
             <div className="row">
@@ -1746,11 +1786,11 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               </div>
             )}
           </>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* 現状を手入力で登録（レイアウト＝配列が無い複雑な発電所向け。図面がある時は前後比較カードで登録するため非表示） */}
-      {layout.arrays.length === 0 && (
+      {phase === "kisetsu" && layout.arrays.length === 0 && (
       <div className="card">
         <div className="row">
           <h2 style={{ margin: 0 }}>現状を手入力で登録・編集（レイアウト不要）</h2>
@@ -1951,7 +1991,8 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
             ドラッグ＝移動／ホイール or ＋−ボタン＝ズーム／▣＝パネルに最大化／⤢＝写真全体／↩戻す・🗑全消去／配列をドラッグで位置調整
           </div>
 
-          {/* 結線図（パワコン構成からストリングを自動割付） */}
+          {/* 結線図（パワコン構成からストリングを自動割付）— 変更の検討フェーズのみ */}
+          {phase === "henkou" && (
           <div style={{ padding: "8px 12px", borderTop: "1px solid #1e293b" }}>
             <div className="row" style={{ alignItems: "center", flexWrap: "wrap" }}>
               <button
@@ -2022,8 +2063,10 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               </div>
             )}
           </div>
+          )}
 
-          {/* 写真の下：現状の説明・凡例 */}
+          {/* 写真の下：現状の説明・凡例 — 変更の検討フェーズのみ（PDF用） */}
+          {phase === "henkou" && (
           <div style={{ padding: "8px 12px", borderTop: "1px solid #1e293b" }}>
             <div className="row" style={{ alignItems: "center" }}>
               <strong>現状の説明・凡例</strong>
@@ -2063,12 +2106,13 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               </div>
             )}
           </div>
+          )}
         </div>
       )}
 
       {layout.imageDataUrl && (
         <div className="card">
-          <h2>パネル配列の配置</h2>
+          <h2>{phase === "kisetsu" ? "既設パネルの配置（スキャン・配列追加）" : "新設パネルの配置（入替・増設用の配列を追加）"}</h2>
           {panels.length === 0 ? (
             <div className="empty">先に「パネル登録」でパネルを登録してください。</div>
           ) : (
@@ -2114,7 +2158,7 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
             両面パネルは裏面採光のため<strong>縦（前後）の隙間を広め</strong>に取るのが一般的です。
           </div>
 
-          {panels.length > 0 && (
+          {phase === "kisetsu" && panels.length > 0 && (
             <div className="row" style={{ marginTop: 6, padding: "8px 10px", background: "#0b1220", borderRadius: 8 }}>
               <button
                 className={`btn small ${mode === "scan" ? "" : "secondary"}`}
@@ -2131,8 +2175,8 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
             </div>
           )}
 
-          {/* 混在パネル：同サイズの別機種が1枚ずつ混ざる配列を、セルごとに型式変更 */}
-          {panels.length > 0 && (
+          {/* 混在パネル：同サイズの別機種が1枚ずつ混ざる配列を、セルごとに型式変更（入替検討＝変更フェーズ） */}
+          {phase === "henkou" && panels.length > 0 && (
             <div className="row" style={{ marginTop: 6, padding: "8px 10px", background: "#0b1220", borderRadius: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
               <button
                 className={`btn small ${mode === "cellpanel" ? "" : "secondary"}`}
@@ -2153,7 +2197,7 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
             </div>
           )}
 
-          {panels.length > 0 && (
+          {phase === "henkou" && panels.length > 0 && (
             <div className="row" style={{ marginTop: 6 }}>
               <button className="btn secondary" onClick={addFreePanel}>＋ 1枚追加（単独パネル）</button>
               {freeCount > 0 && (
@@ -2294,13 +2338,15 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
                   />
                 </div>
               </div>
-              <div className="row" style={{ marginTop: 8 }}>
-                <span className="hint">この配列の流用指定：</span>
-                <button className="btn secondary small" onClick={() => setAllCells(selected.id, true)}>全部流用</button>
-                <button className="btn secondary small" onClick={() => setAllCells(selected.id, false)}>全部入換</button>
-                <button className="btn secondary small" onClick={() => invertCells(selected.id)}>反転</button>
-                <span className="hint">流用 {arrayCellStats(selected).keep} 枚</span>
-              </div>
+              {phase === "henkou" && (
+                <div className="row" style={{ marginTop: 8 }}>
+                  <span className="hint">この配列の流用指定：</span>
+                  <button className="btn secondary small" onClick={() => setAllCells(selected.id, true)}>全部流用</button>
+                  <button className="btn secondary small" onClick={() => setAllCells(selected.id, false)}>全部入換</button>
+                  <button className="btn secondary small" onClick={() => invertCells(selected.id)}>反転</button>
+                  <span className="hint">流用 {arrayCellStats(selected).keep} 枚</span>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -2308,7 +2354,7 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
 
       {(layout.imageDataUrl || layout.baseline || manualCurrent.length > 0 || layout.arrays.length > 0) && (
         <div className="card">
-          <h2>現状の基準登録 ＆ 前後比較</h2>
+          <h2>{phase === "kisetsu" ? "現状の基準登録（既設の仕上げ）" : "前後比較（現状 ⇔ 改修案）"}</h2>
           <div className="row" style={{ alignItems: "center", flexWrap: "wrap" }}>
             {!layout.baseline ? (
               <button className="btn" onClick={registerBaseline}>現状を基準登録（改修前を保存）</button>
@@ -2320,6 +2366,12 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               </>
             )}
             {manualMsg && <strong style={{ color: "#22c55e" }}>{manualMsg}</strong>}
+            {phase === "kisetsu" && layout.baseline && (
+              <>
+                <span className="spacer" />
+                <button className="btn" onClick={() => switchPhase("henkou")}>→ ② 変更の検討へ進む</button>
+              </>
+            )}
           </div>
           <div className="hint" style={{ marginTop: 4 }}>
             <strong>現状（基準）＝改修前</strong>：登録した時点で固定（図面を編集しても変わりません）。
@@ -2327,7 +2379,7 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
             「取り直す」を押すと現状が今の内容で上書きされます。
           </div>
 
-          {(() => {
+          {phase === "henkou" && (() => {
             const cur = summarizeLayout(layout, panels, "kaishu");
             const base = layout.baseline;
             const fmt = (n: number) => n.toLocaleString();
