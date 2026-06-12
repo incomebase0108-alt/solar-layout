@@ -104,8 +104,8 @@ export default function App() {
           updatePlant={plantStore.updatePlant}
         />
       )}
-      {tab === "panel" && <PanelRegistry store={panelStore} />}
-      {tab === "pcs" && <PcsRegistry store={pcsStore} />}
+      {tab === "panel" && <PanelRegistry store={panelStore} plants={plantStore.plants} />}
+      {tab === "pcs" && <PcsRegistry store={pcsStore} plants={plantStore.plants} />}
       {tab === "string" && (
         <StringCalculator
           panels={panelStore.panels}

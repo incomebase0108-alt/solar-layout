@@ -46,6 +46,25 @@ export function exportAll(): void {
   URL.revokeObjectURL(url);
 }
 
+/** キーごとの期待する型。壊れたバックアップを取り込むと起動不能（白画面）になるため検証する。 */
+function isValidValue(key: string, value: unknown): boolean {
+  switch (key) {
+    case KEYS.panels:
+    case KEYS.pcs:
+    case KEYS.plants:
+    case KEYS.deletedSeeds:
+      return Array.isArray(value);
+    case KEYS.conditions:
+    case KEYS.layout:
+    case KEYS.costRates:
+      return typeof value === "object" && value !== null && !Array.isArray(value);
+    case KEYS.currentPlant:
+      return typeof value === "string";
+    default:
+      return false;
+  }
+}
+
 /**
  * バックアップ JSON を読み込み、localStorage へ反映する。
  * 反映後はリロードして全画面に適用するのが安全。
@@ -56,14 +75,18 @@ export function importAll(file: File): Promise<void> {
     reader.onload = () => {
       try {
         const parsed = JSON.parse(reader.result as string) as BackupFile;
-        if (parsed.format !== FORMAT || typeof parsed.data !== "object") {
+        if (parsed.format !== FORMAT || typeof parsed.data !== "object" || parsed.data === null) {
           throw new Error("対応していないファイル形式です。");
         }
         const known = new Set<string>(Object.values(KEYS));
-        for (const [key, value] of Object.entries(parsed.data)) {
-          if (known.has(key)) {
-            localStorage.setItem(key, JSON.stringify(value));
-          }
+        // 全キーを検証してから書き込む（途中で失敗して中途半端な状態にならないように）
+        const entries = Object.entries(parsed.data).filter(([key]) => known.has(key));
+        const bad = entries.filter(([key, value]) => !isValidValue(key, value));
+        if (bad.length) {
+          throw new Error(`バックアップの内容が壊れています（${bad.map(([k]) => k).join(", ")}）。読込を中止しました。`);
+        }
+        for (const [key, value] of entries) {
+          localStorage.setItem(key, JSON.stringify(value));
         }
         resolve();
       } catch (e) {

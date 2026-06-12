@@ -12,16 +12,39 @@ import { cellKey } from "../types";
  */
 export type CountMode = "genkyo" | "kaishu";
 
+/** "r,c" キーが rows×cols の範囲内か。行列を縮小した後に残る死にキーを集計から除くため。 */
+function inGrid(key: string, rows: number, cols: number): boolean {
+  const i = key.indexOf(",");
+  const r = Number(key.slice(0, i));
+  const c = Number(key.slice(i + 1));
+  return Number.isInteger(r) && Number.isInteger(c) && r >= 0 && r < rows && c >= 0 && c < cols;
+}
+
+/**
+ * 配列1つのセルマークの実数。
+ * - 範囲外（行列縮小後の死にキー）・重複は数えない
+ * - 流用と撤去が同じセルに付いている場合は撤去を優先（「全数流用→一部撤去」の操作順で重複が生じる）
+ */
+export function arrayCellStats(a: PanelArray): {
+  grid: number;
+  removed: number;
+  keep: number;
+  hasKeep: boolean;
+} {
+  const removedSet = new Set((a.removedCells ?? []).filter((k) => inGrid(k, a.rows, a.cols)));
+  const keepSet = new Set((a.keepCells ?? []).filter((k) => inGrid(k, a.rows, a.cols)));
+  let keep = 0;
+  for (const k of keepSet) if (!removedSet.has(k)) keep++;
+  return { grid: a.rows * a.cols, removed: removedSet.size, keep, hasKeep: keepSet.size > 0 };
+}
+
 /** 配列1つの、mode に応じた枚数。 */
 export function arrayCountByMode(a: PanelArray, mode: CountMode): number {
-  const keep = a.keepCells?.length ?? 0;
-  const grid = a.rows * a.cols; // 行×列の満数（撤去前）
-  const afterRemoved = grid - (a.removedCells?.length ?? 0); // 撤去後
-  const hasKeep = keep > 0;
+  const s = arrayCellStats(a);
   // 現況（基準）：既存配列は「撤去前の満数」＝元々建っていた枚数（撤去は改修操作なので引かない）。
-  if (mode === "genkyo") return hasKeep ? grid : 0;
+  if (mode === "genkyo") return s.hasKeep ? s.grid : 0;
   // 改修案：既存は流用枚数、新設は撤去後の全数。
-  return hasKeep ? keep : afterRemoved;
+  return s.hasKeep ? s.keep : s.grid - s.removed;
 }
 
 /** レイアウトを型式ごとに集計（枚数・kW）。 */
@@ -45,9 +68,9 @@ export function summarizeLayout(
       add(a.panelId, arrayCountByMode(a, mode));
       continue;
     }
-    // セルごとにパネル型式が混在する配列は1セルずつ数える
-    const keep = new Set(a.keepCells ?? []);
-    const removed = new Set(a.removedCells ?? []);
+    // セルごとにパネル型式が混在する配列は1セルずつ数える（範囲外の死にキーは除外）
+    const keep = new Set((a.keepCells ?? []).filter((k) => inGrid(k, a.rows, a.cols)));
+    const removed = new Set((a.removedCells ?? []).filter((k) => inGrid(k, a.rows, a.cols)));
     const hasKeep = keep.size > 0;
     for (let r = 0; r < a.rows; r++) {
       for (let c = 0; c < a.cols; c++) {

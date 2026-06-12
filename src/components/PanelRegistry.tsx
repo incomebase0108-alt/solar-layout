@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { PanelSpec } from "../types";
+import type { PanelSpec, PowerPlant } from "../types";
 import { uid } from "../store";
 
 interface Props {
@@ -8,6 +8,8 @@ interface Props {
     upsert: (p: PanelSpec) => void;
     remove: (id: string) => void;
   };
+  /** 削除時の参照チェック用。使用中のパネルを消すと kW・見積が黙って 0 扱いになるため。 */
+  plants: PowerPlant[];
 }
 
 function emptyPanel(): PanelSpec {
@@ -31,7 +33,7 @@ function emptyPanel(): PanelSpec {
   };
 }
 
-export function PanelRegistry({ store }: Props) {
+export function PanelRegistry({ store, plants }: Props) {
   const [draft, setDraft] = useState<PanelSpec>(emptyPanel());
   const [editing, setEditing] = useState(false);
   // W単価（円/W）。Pmax×W単価＝1枚価格 を自動計算するための入力欄の値。
@@ -100,6 +102,9 @@ export function PanelRegistry({ store }: Props) {
       impA: Number(draft.impA) || 0,
       vocV: Number(draft.vocV) || 0,
       iscA: Number(draft.iscA) || 0,
+      // 空欄のまま保存すると低温Voc計算が NaN になり、直列超過チェックが効かなくなる
+      tempCoeffVocPctPerC: Number(draft.tempCoeffVocPctPerC) || -0.27,
+      tempCoeffPmaxPctPerC: Number(draft.tempCoeffPmaxPctPerC) || -0.34,
     });
     setDraft(emptyPanel());
     setWattPrice("");
@@ -111,6 +116,33 @@ export function PanelRegistry({ store }: Props) {
     setWattPrice(wattPriceFrom(p.unitPriceYen, p.pmaxW));
     setEditing(true);
     window.scrollTo({ top: 0, behavior: "smooth" });
+  }
+
+  /** このパネルを使っている発電所名（使用中の削除を止めるため）。 */
+  function usedIn(id: string): string[] {
+    return plants
+      .filter(
+        (pl) =>
+          pl.layout.arrays.some(
+            (a) => a.panelId === id || Object.values(a.cellPanels ?? {}).includes(id)
+          ) ||
+          (pl.layout.freePanels ?? []).some((f) => f.panelId === id) ||
+          (pl.layout.manualCurrent ?? []).some((m) => m.panelId === id) ||
+          (pl.pcsUnits ?? []).some((u) => (u.strings ?? []).some((s) => s.panelId === id)) ||
+          pl.wiring?.panelId === id
+      )
+      .map((pl) => pl.name);
+  }
+
+  function removePanel(p: PanelSpec) {
+    const used = usedIn(p.id);
+    if (used.length) {
+      alert(
+        `${p.model} は次の発電所で使用中のため削除できません：\n・${used.join("\n・")}\n\n先に図面・パワコン構成から外してください。`
+      );
+      return;
+    }
+    if (confirm(`${p.model} を削除しますか？`)) store.remove(p.id);
   }
 
   return (
@@ -178,7 +210,7 @@ export function PanelRegistry({ store }: Props) {
         <div className="form-grid">
           <div className="field">
             <label>Voc 温度係数 β</label>
-            <input type="number" step="0.01" value={draft.tempCoeffVocPctPerC} onChange={num("tempCoeffVocPctPerC")} />
+            <input type="number" step="0.01" value={draft.tempCoeffVocPctPerC ?? ""} onChange={num("tempCoeffVocPctPerC")} />
           </div>
           <div className="field">
             <label>Pmax 温度係数</label>
@@ -253,7 +285,7 @@ export function PanelRegistry({ store }: Props) {
                   <td className="num">
                     <div className="row" style={{ justifyContent: "flex-end" }}>
                       <button className="btn secondary small" onClick={() => edit(p)}>編集</button>
-                      <button className="btn danger small" onClick={() => confirm(`${p.model} を削除しますか？`) && store.remove(p.id)}>削除</button>
+                      <button className="btn danger small" onClick={() => removePanel(p)}>削除</button>
                     </div>
                   </td>
                 </tr>

@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PanelSpec, LayoutProject, PanelArray, ShadowZone, FreePanel, LegendItem, PcsUnitLine, PcsSpec } from "../types";
 import { cellKey, arrayGaps } from "../types";
 import { shadedCellKeys, pointInZones } from "../calc/shadow";
-import { summarizeLayout } from "../calc/layoutCount";
+import { summarizeLayout, arrayCellStats } from "../calc/layoutCount";
 import { assignWiring, type WiringAssignResult } from "../calc/wiringAssign";
 import { fileToScaledDataUrl } from "../utils/image";
 import { geocodeAddress, buildSeamlessPhoto, calibrationFromScale } from "../utils/gsiMap";
@@ -50,10 +50,25 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   // 既存の patch 呼び出しはすべてこのラッパ経由になり、自動で履歴対象になる。
   const historyRef = useRef<LayoutProject[]>([]);
   const [histLen, setHistLen] = useState(0);
-  const patch = (p: Partial<LayoutProject>) => {
+  // ドラッグ・スライダーは mousemove/onChange 毎に発火するため、そのまま積むと
+  // 1操作で履歴50件を食い潰して過去に戻れなくなる。連続操作は1件に合体させる。
+  const gestureRef = useRef<{ name: string; t: number } | null>(null);
+  const pushHistory = () => {
     historyRef.current.push(layout);
     if (historyRef.current.length > 50) historyRef.current.shift();
     setHistLen(historyRef.current.length);
+  };
+  const patch = (p: Partial<LayoutProject>) => {
+    gestureRef.current = null; // 単発操作。次の連続操作は新しい履歴になる
+    pushHistory();
+    rawPatch(p);
+  };
+  /** 連続発火する操作（ドラッグ・スライダー）用。同じ操作が短時間続く間は履歴を1件だけ積む。 */
+  const patchContinuous = (gesture: string, p: Partial<LayoutProject>) => {
+    const now = Date.now();
+    const g = gestureRef.current;
+    if (!g || g.name !== gesture || now - g.t > 1500) pushHistory();
+    gestureRef.current = { name: gesture, t: now };
     rawPatch(p);
   };
   function undo() {
@@ -799,7 +814,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       const sin = Math.sin(rot);
       const idx = (cos * dsx + sin * dsy) / view.zoom;
       const idy = (-sin * dsx + cos * dsy) / view.zoom;
-      patch({
+      patchContinuous("drag", {
         arrays: layout.arrays.map((a) =>
           a.id === d.arrId
             ? { ...a, posXpx: orig.px + idx, posYpx: orig.py + idy }
@@ -811,7 +826,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       const sin = Math.sin(rot);
       const idx = (cos * dsx + sin * dsy) / view.zoom;
       const idy = (-sin * dsx + cos * dsy) / view.zoom;
-      patch({
+      patchContinuous("drag", {
         freePanels: (layout.freePanels ?? []).map((f) =>
           f.id === d.freeId
             ? { ...f, posXpx: orig.px + idx, posYpx: orig.py + idy }
@@ -823,6 +838,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
 
   function onMouseUp() {
     dragRef.current = null;
+    gestureRef.current = null; // ドラッグ終了。次のドラッグは別の履歴として積む
     // 影ゾーンの確定
     if (mode === "shadow" && shadowStartRef.current) {
       shadowStartRef.current = null;
@@ -1061,7 +1077,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
     const c = canvasRef.current;
     const deg = ((newDeg % 360) + 360) % 360;
     if (!c) {
-      patch({ imageRotationDeg: deg });
+      patchContinuous("imgrot", { imageRotationDeg: deg });
       return;
     }
     const Cx = c.width / 2;
@@ -1077,7 +1093,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
     const tx = Cx - view.zoom * (Math.cos(rot1) * p0x - Math.sin(rot1) * p0y);
     const ty = Cy - view.zoom * (Math.sin(rot1) * p0x + Math.cos(rot1) * p0y);
     setView((v) => ({ ...v, tx, ty }));
-    patch({ imageRotationDeg: deg });
+    patchContinuous("imgrot", { imageRotationDeg: deg });
   }
 
   function rotate(delta: number) {
@@ -1289,8 +1305,40 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
     setSelectedId(arr.id);
   }
 
-  function updateArray(id: string, p: Partial<PanelArray>) {
-    patch({ arrays: layout.arrays.map((a) => (a.id === id ? { ...a, ...p } : a)) });
+  function updateArray(id: string, p: Partial<PanelArray>, gesture?: string) {
+    const upd = { arrays: layout.arrays.map((a) => (a.id === id ? { ...a, ...p } : a)) };
+    if (gesture) patchContinuous(gesture, upd);
+    else patch(upd);
+  }
+  /**
+   * 行数・列数の変更。1未満や小数を防ぎ、新しいグリッドの範囲外になった
+   * 流用/撤去/型式上書きのマークを掃除する（残すと枚数集計や表示が狂う）。
+   */
+  function resizeArray(id: string, p: { rows?: number; cols?: number }) {
+    patch({
+      arrays: layout.arrays.map((a) => {
+        if (a.id !== id) return a;
+        const rows = Math.max(1, Math.floor(p.rows ?? a.rows) || 1);
+        const cols = Math.max(1, Math.floor(p.cols ?? a.cols) || 1);
+        const ok = (k: string) => {
+          const i = k.indexOf(",");
+          const r = Number(k.slice(0, i));
+          const c = Number(k.slice(i + 1));
+          return r >= 0 && r < rows && c >= 0 && c < cols;
+        };
+        const cellPanels = a.cellPanels
+          ? Object.fromEntries(Object.entries(a.cellPanels).filter(([k]) => ok(k)))
+          : undefined;
+        return {
+          ...a,
+          rows,
+          cols,
+          keepCells: (a.keepCells ?? []).filter(ok),
+          removedCells: (a.removedCells ?? []).filter(ok),
+          cellPanels,
+        };
+      }),
+    });
   }
   function deleteArray(id: string) {
     patch({ arrays: layout.arrays.filter((a) => a.id !== id) });
@@ -1337,8 +1385,10 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
     setSelectedFreeId(fp.id);
     setSelectedId(null);
   }
-  function updateFree(id: string, p: Partial<FreePanel>) {
-    patch({ freePanels: (layout.freePanels ?? []).map((f) => (f.id === id ? { ...f, ...p } : f)) });
+  function updateFree(id: string, p: Partial<FreePanel>, gesture?: string) {
+    const upd = { freePanels: (layout.freePanels ?? []).map((f) => (f.id === id ? { ...f, ...p } : f)) };
+    if (gesture) patchContinuous(gesture, upd);
+    else patch(upd);
   }
   function deleteFree(id: string) {
     patch({ freePanels: (layout.freePanels ?? []).filter((f) => f.id !== id) });
@@ -1348,10 +1398,12 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
   const selected = layout.arrays.find((a) => a.id === selectedId) ?? null;
   const selectedFree = (layout.freePanels ?? []).find((f) => f.id === selectedFreeId) ?? null;
   const freeCount = (layout.freePanels ?? []).length;
-  const removedTotal = layout.arrays.reduce((s, a) => s + (a.removedCells?.length ?? 0), 0);
-  const arrayCells = layout.arrays.reduce((s, a) => s + a.rows * a.cols, 0);
+  // 範囲外の死にキー・流用∩撤去の重複を除いた実数で集計（layoutCount と同一ルール）
+  const cellStats = layout.arrays.map((a) => arrayCellStats(a));
+  const removedTotal = cellStats.reduce((s, x) => s + x.removed, 0);
+  const arrayCells = cellStats.reduce((s, x) => s + x.grid, 0);
   const totalPanels = arrayCells - removedTotal + freeCount;
-  const keepTotal = layout.arrays.reduce((s, a) => s + (a.keepCells?.length ?? 0), 0);
+  const keepTotal = cellStats.reduce((s, x) => s + x.keep, 0);
   const zones = layout.shadowZones ?? [];
   const shadedTotal = layout.arrays.reduce(
     (s, a) => s + shadedCellKeys(a, arrayPanelPx(a), zones).size,
@@ -1409,11 +1461,10 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
     // 配列単位で判定：流用マークあり＝既設（流用数）／無し＝新設（全数）。
     // 既存配列の入換セル（流用でない分）は撤去されるため凡例には出さない。
     for (const a of layout.arrays) {
-      const keepN = a.keepCells?.length ?? 0;
-      const full = a.rows * a.cols - (a.removedCells?.length ?? 0);
+      const s = arrayCellStats(a);
       const cur = touch(a.panelId, a.orientation === "portrait" ? "縦" : "横");
-      if (keepN > 0) cur.existing += keepN;
-      else cur.added += full;
+      if (s.hasKeep) cur.existing += s.keep;
+      else cur.added += s.grid - s.removed;
     }
     for (const f of layout.freePanels ?? []) {
       const cur = touch(f.panelId, f.orientation === "portrait" ? "縦" : "横");
@@ -1574,35 +1625,6 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
 
         {layout.imageDataUrl && (
           <>
-            <h3>写真の向き・表示</h3>
-            <div className="row">
-              <button className="btn secondary small" onClick={() => rotate(-90)}>⟲ 90°</button>
-              <button className="btn secondary small" onClick={() => rotate(90)}>⟳ 90°</button>
-              <button className="btn secondary small" onClick={() => rotate(-1)}>⟲ 1°</button>
-              <button className="btn secondary small" onClick={() => rotate(1)}>⟳ 1°</button>
-              <div className="field" style={{ flex: 1, minWidth: 200 }}>
-                <label>向き（回転）: {layout.imageRotationDeg}°</label>
-                <input
-                  type="range"
-                  min={0}
-                  max={359}
-                  value={layout.imageRotationDeg}
-                  onChange={(e) => setRotation(Number(e.target.value))}
-                />
-              </div>
-              <div className="field" style={{ width: 160 }}>
-                <label>背景の透過度: {(layout.imageOpacity * 100) | 0}%</label>
-                <input
-                  type="range"
-                  min={0}
-                  max={1}
-                  step={0.05}
-                  value={layout.imageOpacity}
-                  onChange={(e) => patch({ imageOpacity: Number(e.target.value) })}
-                />
-              </div>
-            </div>
-
             <h3>スケール校正</h3>
             <div className="row">
               <button
@@ -1849,6 +1871,55 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               ⤢
             </button>
           </div>
+          {/* 写真の向き・透過（写真を見ながら調整できるよう右端にオーバーレイ） */}
+          {layout.imageDataUrl && (
+            <div
+              style={{
+                position: "absolute",
+                top: 170,
+                right: 10,
+                width: 120,
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+                background: "rgba(15, 23, 42, 0.88)",
+                border: "1px solid #334155",
+                borderRadius: 8,
+                padding: 8,
+                zIndex: 5,
+              }}
+            >
+              <div className="hint" style={{ marginTop: 0 }}>向き: {layout.imageRotationDeg}°</div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button className="btn secondary small" style={{ flex: 1 }} title="左へ90°回す" onClick={() => rotate(-90)}>⟲90</button>
+                <button className="btn secondary small" style={{ flex: 1 }} title="右へ90°回す" onClick={() => rotate(90)}>⟳90</button>
+              </div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button className="btn secondary small" style={{ flex: 1 }} title="左へ1°回す" onClick={() => rotate(-1)}>⟲1</button>
+                <button className="btn secondary small" style={{ flex: 1 }} title="右へ1°回す" onClick={() => rotate(1)}>⟳1</button>
+              </div>
+              <input
+                type="range"
+                min={0}
+                max={359}
+                value={layout.imageRotationDeg}
+                title="向き（回転）"
+                onChange={(e) => setRotation(Number(e.target.value))}
+                style={{ width: "100%" }}
+              />
+              <div className="hint" style={{ marginTop: 0 }}>透過: {(layout.imageOpacity * 100) | 0}%</div>
+              <input
+                type="range"
+                min={0}
+                max={1}
+                step={0.05}
+                value={layout.imageOpacity}
+                title="背景の透過度"
+                onChange={(e) => patchContinuous("imgopacity", { imageOpacity: Number(e.target.value) })}
+                style={{ width: "100%" }}
+              />
+            </div>
+          )}
           {/* 結線編集用の戻す/進める（クリック位置に出る・全体の戻すとは独立） */}
           {wireMode && wireEdit && (
             <div
@@ -2010,11 +2081,11 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               </div>
               <div className="field">
                 <label>行数（縦）</label>
-                <input type="number" min={1} value={formRows} onChange={(e) => setFormRows(Number(e.target.value))} />
+                <input type="number" min={1} value={formRows} onChange={(e) => setFormRows(Math.max(1, Math.floor(Number(e.target.value)) || 1))} />
               </div>
               <div className="field">
                 <label>列数（横）</label>
-                <input type="number" min={1} value={formCols} onChange={(e) => setFormCols(Number(e.target.value))} />
+                <input type="number" min={1} value={formCols} onChange={(e) => setFormCols(Math.max(1, Math.floor(Number(e.target.value)) || 1))} />
               </div>
               <div className="field">
                 <label>横の隙間 (m)</label>
@@ -2110,7 +2181,7 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
                 </div>
                 <div className="field" style={{ flex: 1, minWidth: 200 }}>
                   <label>回転: {selectedFree.rotationDeg}°</label>
-                  <input type="range" min={-90} max={90} value={selectedFree.rotationDeg} onChange={(e) => updateFree(selectedFree.id, { rotationDeg: Number(e.target.value) })} />
+                  <input type="range" min={-180} max={180} value={selectedFree.rotationDeg} onChange={(e) => updateFree(selectedFree.id, { rotationDeg: Number(e.target.value) }, "rot-free")} />
                 </div>
                 <div className="field" style={{ justifyContent: "flex-end" }}>
                   <button className="btn danger" onClick={() => deleteFree(selectedFree.id)}>このパネルを削除</button>
@@ -2146,8 +2217,8 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
                       <td className="num">{a.rows}×{a.cols}</td>
                       <td className="num">
                         {a.rows * a.cols}
-                        {(a.keepCells?.length ?? 0) > 0 && (
-                          <span className="hint"> (流用{a.keepCells!.length})</span>
+                        {arrayCellStats(a).hasKeep && (
+                          <span className="hint"> (流用{arrayCellStats(a).keep})</span>
                         )}
                       </td>
                       <td>{a.orientation === "portrait" ? "縦" : "横"}</td>
@@ -2183,15 +2254,15 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
                 </div>
                 <div className="field">
                   <label>行数</label>
-                  <input type="number" min={1} value={selected.rows} onChange={(e) => updateArray(selected.id, { rows: Number(e.target.value) })} />
+                  <input type="number" min={1} value={selected.rows} onChange={(e) => resizeArray(selected.id, { rows: Number(e.target.value) })} />
                 </div>
                 <div className="field">
                   <label>列数</label>
-                  <input type="number" min={1} value={selected.cols} onChange={(e) => updateArray(selected.id, { cols: Number(e.target.value) })} />
+                  <input type="number" min={1} value={selected.cols} onChange={(e) => resizeArray(selected.id, { cols: Number(e.target.value) })} />
                 </div>
                 <div className="field" style={{ flex: 1, minWidth: 200 }}>
                   <label>配列の回転: {selected.rotationDeg}°</label>
-                  <input type="range" min={-45} max={45} value={selected.rotationDeg} onChange={(e) => updateArray(selected.id, { rotationDeg: Number(e.target.value) })} />
+                  <input type="range" min={-180} max={180} value={selected.rotationDeg} onChange={(e) => updateArray(selected.id, { rotationDeg: Number(e.target.value) }, "rot-arr")} />
                 </div>
                 <div className="field">
                   <label>向き</label>
@@ -2219,7 +2290,7 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
                 <button className="btn secondary small" onClick={() => setAllCells(selected.id, true)}>全部流用</button>
                 <button className="btn secondary small" onClick={() => setAllCells(selected.id, false)}>全部入換</button>
                 <button className="btn secondary small" onClick={() => invertCells(selected.id)}>反転</button>
-                <span className="hint">流用 {selected.keepCells?.length ?? 0} 枚</span>
+                <span className="hint">流用 {arrayCellStats(selected).keep} 枚</span>
               </div>
             </div>
           )}

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import type { PcsSpec } from "../types";
+import type { PcsSpec, PowerPlant } from "../types";
 import { WARRANTY_OPTIONS } from "../types";
 import { uid } from "../store";
 
@@ -9,6 +9,8 @@ interface Props {
     upsert: (p: PcsSpec) => void;
     remove: (id: string) => void;
   };
+  /** 削除時の参照チェック用。使用中のパワコンを消すと kW・台数集計が黙って狂うため。 */
+  plants: PowerPlant[];
 }
 
 function emptyPcs(): PcsSpec {
@@ -32,7 +34,7 @@ function emptyPcs(): PcsSpec {
   };
 }
 
-export function PcsRegistry({ store }: Props) {
+export function PcsRegistry({ store, plants }: Props) {
   const [draft, setDraft] = useState<PcsSpec>(emptyPcs());
   const [editing, setEditing] = useState(false);
 
@@ -52,9 +54,52 @@ export function PcsRegistry({ store }: Props) {
       alert("型番を入力してください");
       return;
     }
-    store.upsert(draft);
+    // 空欄(undefined)のまま保存すると直列数計算が NaN になり、
+    // 「最大入力電圧の超過」エラーが一切出なくなる（NaN比較は常にfalse）ため数値に補正する
+    const fixed: PcsSpec = {
+      ...draft,
+      ratedPowerKw: Number(draft.ratedPowerKw) || 0,
+      mpptCount: Math.max(1, Math.floor(Number(draft.mpptCount)) || 1),
+      stringsPerMppt: Math.max(1, Math.floor(Number(draft.stringsPerMppt)) || 1),
+      maxInputVoltageV: Number(draft.maxInputVoltageV) || 0,
+      mpptVoltageMinV: Number(draft.mpptVoltageMinV) || 0,
+      mpptVoltageMaxV: Number(draft.mpptVoltageMaxV) || 0,
+      startVoltageV: draft.startVoltageV == null ? undefined : Number(draft.startVoltageV) || 0,
+      maxInputCurrentPerMpptA: Number(draft.maxInputCurrentPerMpptA) || 0,
+      unitPriceYen: draft.unitPriceYen == null ? undefined : Number(draft.unitPriceYen) || 0,
+    };
+    if (!fixed.maxInputVoltageV || !fixed.mpptVoltageMaxV) {
+      if (
+        !confirm(
+          "最大入力電圧 / MPPT電圧上限が未入力（0）です。\n" +
+            "このままだと直列数の電圧チェックが全ストリングに警告を出します。登録しますか？"
+        )
+      )
+        return;
+    }
+    store.upsert(fixed);
     setDraft(emptyPcs());
     setEditing(false);
+  }
+
+  /** このパワコンを使っている発電所名（使用中の削除を止めるため）。 */
+  function usedIn(id: string): string[] {
+    return plants
+      .filter(
+        (pl) => (pl.pcsUnits ?? []).some((u) => u.pcsId === id) || pl.wiring?.pcsId === id
+      )
+      .map((pl) => pl.name);
+  }
+
+  function removePcs(p: PcsSpec) {
+    const used = usedIn(p.id);
+    if (used.length) {
+      alert(
+        `${p.model} は次の発電所で使用中のため削除できません：\n・${used.join("\n・")}\n\n先にパワコン構成から外してください。`
+      );
+      return;
+    }
+    if (confirm(`${p.model} を削除しますか？`)) store.remove(p.id);
   }
 
   function edit(p: PcsSpec) {
@@ -226,7 +271,7 @@ export function PcsRegistry({ store }: Props) {
                     <div className="row" style={{ justifyContent: "flex-end" }}>
                       <button className="btn secondary small" onClick={() => edit(p)}>編集</button>
                       <button className="btn secondary small" onClick={() => duplicate(p)} title="この内容をコピーして新規登録（保証・単価違いを作る）">複製</button>
-                      <button className="btn danger small" onClick={() => confirm(`${p.model} を削除しますか？`) && store.remove(p.id)}>削除</button>
+                      <button className="btn danger small" onClick={() => removePcs(p)}>削除</button>
                     </div>
                   </td>
                 </tr>

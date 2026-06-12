@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { PanelSpec, PcsSpec, PowerPlant, CostRates } from "../types";
 import { estimateCost, estimateAfterGeneration, estimateRoi, type NewPanelLine } from "../calc/cost";
+import { arrayCellStats } from "../calc/layoutCount";
 import { uid } from "../store";
 
 interface Props {
@@ -36,17 +37,16 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
     for (const a of plant.layout.arrays) {
       const p = panels.find((x) => x.id === a.panelId);
       const pmax = p?.pmaxW ?? 0;
-      const keep = a.keepCells?.length ?? 0;
-      const grid = a.rows * a.cols;
-      const afterRemoved = grid - (a.removedCells?.length ?? 0);
-      if (keep > 0) {
+      // 撤去との重複・グリッド外の死にキーを除いた実数で数える（layoutCount と同一ルール）
+      const { grid, removed, keep, hasKeep } = arrayCellStats(a);
+      if (hasKeep) {
         // 既存配列
         beforeKw += (grid * pmax) / 1000;
         keptKw += (keep * pmax) / 1000;
         removedExisting += grid - keep;
       } else {
         // 新設配列
-        addNew(a.panelId, afterRemoved);
+        addNew(a.panelId, grid - removed);
       }
     }
     for (const f of plant.layout.freePanels ?? []) addNew(f.panelId, 1);
@@ -68,7 +68,7 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
     let newPcs = 0;
     for (const u of plant.pcsUnits ?? []) {
       const pcs = pcsList.find((p) => p.id === u.pcsId);
-      if (pcs?.kind === "new") newPcs += u.count;
+      if (pcs?.kind === "new") newPcs += u.count ?? 1;
     }
     return { newLines, newTotal, removedExisting, keptKw, beforeKw, newPcs };
   }, [plant.layout.arrays, plant.layout.freePanels, plant.layout.manualCurrent, plant.pcsUnits, panels, pcsList]);

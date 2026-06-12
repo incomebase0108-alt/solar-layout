@@ -29,22 +29,39 @@ export const KEYS = {
   plants: "solar-layout.plants",
   currentPlant: "solar-layout.currentPlant",
   costRates: "solar-layout.costRates",
+  /** 削除した初期搭載マスタ（seed）の id。これが無いと削除してもリロードで復活する。 */
+  deletedSeeds: "solar-layout.deletedSeeds",
 } as const;
 
 function load<T>(key: string, fallback: T): T {
   try {
     const raw = localStorage.getItem(key);
-    return raw ? (JSON.parse(raw) as T) : fallback;
+    if (raw == null) return fallback;
+    const parsed = JSON.parse(raw) as T;
+    // "null" 等の不正値が書かれていた場合に白画面クラッシュしないよう fallback に倒す
+    return parsed ?? fallback;
   } catch {
     return fallback;
   }
 }
 
+let lastSaveAlertAt = 0;
+
 function save<T>(key: string, value: T): void {
   try {
     localStorage.setItem(key, JSON.stringify(value));
   } catch {
-    /* 容量超過などは無視 */
+    // 容量超過などで保存に失敗すると、リロード時に最後に保存できた状態まで巻き戻る。
+    // 黙って失敗すると気づけないため通知する（保存は頻発するので30秒に1回まで）。
+    const now = Date.now();
+    if (now - lastSaveAlertAt > 30_000) {
+      lastSaveAlertAt = now;
+      alert(
+        "データを保存できませんでした（ブラウザの保存容量オーバーの可能性）。\n" +
+          "このままでは最新の編集が残りません。不要な発電所や背景写真を削除して容量を空けるか、\n" +
+          "念のため「バックアップを保存（JSON）」でファイルに退避してください。"
+      );
+    }
   }
 }
 
@@ -403,10 +420,23 @@ function orderedPcs(list: PcsSpec[]): PcsSpec[] {
     .map((x) => x.p);
 }
 
-/** 保存済みリストに、未登録の初期搭載マスタ（seed）を補完する。 */
+function loadDeletedSeedIds(): Set<string> {
+  return new Set(load<string[]>(KEYS.deletedSeeds, []));
+}
+
+/** seed 由来のマスタが削除されたことを記録する（mergeSeed による復活を防ぐ）。 */
+function markSeedDeleted(id: string): void {
+  const s = loadDeletedSeedIds();
+  if (s.has(id)) return;
+  s.add(id);
+  save(KEYS.deletedSeeds, [...s]);
+}
+
+/** 保存済みリストに、未登録の初期搭載マスタ（seed）を補完する。ユーザーが削除した seed は復活させない。 */
 function mergeSeed<T extends { id: string }>(stored: T[], seed: T[]): T[] {
   const ids = new Set(stored.map((s) => s.id));
-  const missing = seed.filter((s) => !ids.has(s.id));
+  const deleted = loadDeletedSeedIds();
+  const missing = seed.filter((s) => !ids.has(s.id) && !deleted.has(s.id));
   return missing.length ? [...stored, ...missing] : stored;
 }
 
@@ -427,6 +457,7 @@ export function usePanels() {
   }, []);
 
   const remove = useCallback((id: string) => {
+    markSeedDeleted(id); // seed 以外の id でも記録して害はない
     setPanels((prev) => prev.filter((x) => x.id !== id));
   }, []);
 
@@ -450,6 +481,7 @@ export function usePcsList() {
   }, []);
 
   const remove = useCallback((id: string) => {
+    markSeedDeleted(id); // seed 以外の id でも記録して害はない
     setPcsList((prev) => prev.filter((x) => x.id !== id));
   }, []);
 
@@ -489,9 +521,18 @@ function newPlant(name: string, layout?: LayoutProject): PowerPlant {
 /** 初期化：旧 単一レイアウト があれば 1 発電所へ移行。無ければ既定の発電所を作る。 */
 function initialPlants(): PowerPlant[] {
   const saved = load<PowerPlant[] | null>(KEYS.plants, null);
-  if (saved && saved.length) return saved;
+  if (saved && saved.length) {
+    // 発電所モデルへ移行済みなら、旧キーは背景写真入りで容量を圧迫するだけなので捨てる
+    try {
+      localStorage.removeItem(KEYS.layout);
+    } catch {
+      /* ignore */
+    }
+    return saved;
+  }
   const legacy = load<LayoutProject | null>(KEYS.layout, null);
-  if (legacy && legacy.imageDataUrl) {
+  // 背景写真なしで配列だけ置いた旧データも移行対象にする
+  if (legacy && (legacy.imageDataUrl || (legacy.arrays?.length ?? 0) > 0)) {
     return [newPlant("発電所1", { ...EMPTY_LAYOUT, ...legacy })];
   }
   return [newPlant("発電所1")];

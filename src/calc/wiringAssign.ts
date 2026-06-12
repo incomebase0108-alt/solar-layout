@@ -91,18 +91,22 @@ export function assignWiring(
   let idx = 0;
   let pcsNo = 0;
   for (const u of pcsUnits) {
-    pcsNo++;
-    const color = pcsColor(pcsNo);
-    let stringNo = 0;
-    for (const s of u.strings ?? []) {
-      stringNo++;
-      const par = Math.max(1, s.parallel);
-      const ser = Math.max(0, s.series);
-      for (let p = 1; p <= par; p++) {
-        for (let n = 0; n < ser && idx < ordered.length; n++) {
-          const key = ordered[idx++];
-          const info = cellInfo.get(key)!;
-          byCell.set(key, { arrayId: info.arrayId, r: info.r, c: info.c, pcsNo, stringNo, parallelNo: p, color, shaded: info.shaded });
+    // 1行に複数台（count>1）の旧形式データも、台数分を展開して割り付ける
+    const units = Math.max(1, u.count ?? 1);
+    for (let t = 0; t < units; t++) {
+      pcsNo++;
+      const color = pcsColor(pcsNo);
+      let stringNo = 0;
+      for (const s of u.strings ?? []) {
+        stringNo++;
+        const par = Math.max(1, s.parallel);
+        const ser = Math.max(0, s.series);
+        for (let p = 1; p <= par; p++) {
+          for (let n = 0; n < ser && idx < ordered.length; n++) {
+            const key = ordered[idx++];
+            const info = cellInfo.get(key)!;
+            byCell.set(key, { arrayId: info.arrayId, r: info.r, c: info.c, pcsNo, stringNo, parallelNo: p, color, shaded: info.shaded });
+          }
         }
       }
     }
