@@ -1,4 +1,5 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { exportAll, shouldRemindBackup, recordDataChange } from "./utils/backup";
 import { PanelRegistry } from "./components/PanelRegistry";
 import { PcsRegistry } from "./components/PcsRegistry";
 import { StringCalculator } from "./components/StringCalculator";
@@ -33,6 +34,37 @@ export default function App() {
     setShowGuide(false);
   }
 
+  // ===== バックアップ促し =====
+  // データはこのブラウザ内（localStorage / IndexedDB）だけに保存される。クリアや故障で
+  // 消えるため、保存後に編集があり一定期間バックアップしていなければバナーで促す。
+  const [remindBackup, setRemindBackup] = useState(false);
+  const [backupDismissed, setBackupDismissed] = useState(false);
+  const fpRef = useRef<string | null>(null);
+  // 画像（imageDataUrl）は IndexedDB 側で出入りするため指紋から除外し、
+  // 起動時のhydration/移行を「ユーザー編集」と誤検知しないようにする。
+  const dataFingerprint = JSON.stringify([
+    plantStore.plants.map((p) => ({ ...p, layout: { ...p.layout, imageDataUrl: 0 } })),
+    panelStore.panels,
+    pcsStore.pcsList,
+    condStore.conditions,
+    costStore.costRates,
+  ]);
+  useEffect(() => {
+    if (fpRef.current === null) {
+      fpRef.current = dataFingerprint; // 初回マウントは編集とみなさない
+    } else if (dataFingerprint !== fpRef.current) {
+      fpRef.current = dataFingerprint;
+      recordDataChange();
+    }
+    setRemindBackup(shouldRemindBackup());
+  }, [dataFingerprint, tab]);
+
+  async function doBackup() {
+    await exportAll();
+    setBackupDismissed(false);
+    setRemindBackup(shouldRemindBackup());
+  }
+
   return (
     <div className="app">
       <Guide
@@ -63,6 +95,27 @@ export default function App() {
 
       <StepNav tab={tab} setTab={(t) => setTab(t as Tab)} current={current ?? null} />
 
+      {remindBackup && !backupDismissed && (
+        <div
+          className="card no-print"
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 10,
+            borderColor: "var(--warn)",
+            background: "rgba(245,158,11,0.10)",
+          }}
+        >
+          <span>
+            💾 編集内容がまだバックアップされていません。データは<strong>このブラウザ内だけ</strong>に保存されています。
+            念のためファイルに保存しておきましょう。
+          </span>
+          <span className="spacer" />
+          <button className="btn small" onClick={doBackup}>💾 今すぐバックアップ</button>
+          <button className="btn secondary small" title="今は閉じる" onClick={() => setBackupDismissed(true)}>×</button>
+        </div>
+      )}
+
       {/* 候補（プラン）切替バー。図面タブでは②変更の検討フェーズ内に表示するため LayoutEditor へ渡す */}
       {current && (tab === "pcsunits" || tab === "cost") && (
         <CandidateBar
@@ -90,6 +143,7 @@ export default function App() {
           panels={panelStore.panels}
           layout={current.layout}
           patch={plantStore.patchLayout}
+          setImage={plantStore.setCurrentImage}
           defaultAddress={current.address}
           pcsUnits={current.pcsUnits}
           pcsList={pcsStore.pcsList}

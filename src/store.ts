@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { putImage, getImage, deleteImage } from "./utils/imageStore";
 import type {
   PanelSpec,
   PcsSpec,
@@ -629,7 +630,57 @@ export function usePlants() {
     return saved ?? "";
   });
 
-  useEffect(() => save(KEYS.plants, plants), [plants]);
+  // 背景画像が IndexedDB に確実に入っている発電所IDの集合。
+  // ここに入っているものだけ localStorage 保存時に画像を外す（消失窓を作らない）。
+  const imagePersistedRef = useRef<Set<string>>(new Set());
+
+  // localStorage には画像を載せずに保存（画像は IndexedDB 側）。容量オーバー対策。
+  useEffect(() => {
+    const persisted = imagePersistedRef.current;
+    const slim = plants.map((p) =>
+      persisted.has(p.id) && p.layout?.imageDataUrl
+        ? { ...p, layout: { ...p.layout, imageDataUrl: null } }
+        : p
+    );
+    save(KEYS.plants, slim);
+  }, [plants]);
+
+  // 起動時：旧データ（localStorageのbase64画像）を IndexedDB へ移行し、
+  // 既に IndexedDB にある画像はメモリへ復元する。失敗時は localStorage のまま動く。
+  useEffect(() => {
+    let active = true;
+    (async () => {
+      const hydrate: Record<string, string> = {};
+      for (const p of plants) {
+        try {
+          const inMem = p.layout?.imageDataUrl;
+          if (inMem) {
+            await putImage(p.id, inMem); // 旧base64 → IndexedDBへ移行
+            imagePersistedRef.current.add(p.id);
+          } else {
+            const url = await getImage(p.id);
+            if (url) {
+              hydrate[p.id] = url;
+              imagePersistedRef.current.add(p.id);
+            }
+          }
+        } catch {
+          /* IndexedDB不可：その発電所は localStorage のまま（従来動作） */
+        }
+      }
+      if (!active) return;
+      // 復元画像を反映＋新しい配列参照で保存effectを再走（移行済み画像をlocalStorageから外す）
+      setPlants((prev) =>
+        prev.map((p) => (hydrate[p.id] ? { ...p, layout: { ...p.layout, imageDataUrl: hydrate[p.id] } } : p))
+      );
+    })();
+    return () => {
+      active = false;
+    };
+    // 起動時のみ。plants は mount 時点のスナップショットを使う。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   useEffect(() => save(KEYS.currentPlant, currentId), [currentId]);
 
   // currentId が未設定/不正なら先頭に寄せる
@@ -658,11 +709,38 @@ export function usePlants() {
   );
 
   const deletePlant = useCallback((id: string) => {
+    deleteImage(id).catch(() => {}); // 背景画像も掃除（失敗しても孤立画像が残るだけで害なし）
+    imagePersistedRef.current.delete(id);
     setPlants((prev) => {
       const next = prev.filter((p) => p.id !== id);
       return next.length ? next : [newPlant("発電所1")];
     });
   }, []);
+
+  /** 現在の発電所の背景画像を設定/削除する。実体は IndexedDB に置き、localStorage には載せない。
+   *  IndexedDB 書き込み成功後にメモリへ反映するので、画像がどこにも無い瞬間を作らない。 */
+  const setCurrentImage = useCallback(
+    async (dataUrl: string | null) => {
+      const id = currentId;
+      if (!id) return;
+      try {
+        if (dataUrl) {
+          await putImage(id, dataUrl);
+          imagePersistedRef.current.add(id);
+        } else {
+          await deleteImage(id);
+          imagePersistedRef.current.delete(id);
+        }
+      } catch {
+        // IndexedDB不可：persisted に入れない＝localStorage に載って従来通り動く
+        imagePersistedRef.current.delete(id);
+      }
+      setPlants((prev) =>
+        prev.map((pl) => (pl.id === id ? { ...pl, layout: { ...pl.layout, imageDataUrl: dataUrl } } : pl))
+      );
+    },
+    [currentId]
+  );
 
   /** 現在の発電所の図面を部分更新 */
   const patchLayout = useCallback(
@@ -874,6 +952,7 @@ export function usePlants() {
     addPlant,
     updatePlant,
     deletePlant,
+    setCurrentImage,
     patchLayout,
     patchWiring,
     addCandidate,

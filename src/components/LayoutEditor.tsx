@@ -15,6 +15,8 @@ interface Props {
   panels: PanelSpec[];
   layout: LayoutProject;
   patch: (p: Partial<LayoutProject>) => void;
+  /** 背景画像を設定/削除する（実体は IndexedDB へ。localStorage 容量対策）。 */
+  setImage: (dataUrl: string | null) => Promise<void> | void;
   /** 発電所の住所（住所→地図の初期値） */
   defaultAddress?: string;
   /** パワコン構成（結線図の割付に使用） */
@@ -78,7 +80,7 @@ function allCellKeys(rows: number, cols: number): string[] {
   return keys;
 }
 
-export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, pcsUnits, pcsList, plantName, customerName, candidateBar, hasCandidates, candidateCount, clearCandidates }: Props) {
+export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaultAddress, pcsUnits, pcsList, plantName, customerName, candidateBar, hasCandidates, candidateCount, clearCandidates }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgReady, setImgReady] = useState(false);
@@ -1556,10 +1558,11 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
     }
     try {
       const url = await fileToScaledDataUrl(file);
+      // 画像は IndexedDB へ（localStorage 容量対策）。先に保存してから他をリセット。
+      await setImage(url);
       // 新しい台紙に差し替えるので、既存の配置・単独パネル・影ゾーン・回転/不透明度もリセット
       // （loadFromAddress と同じクリア内容に揃える）。
       patch({
-        imageDataUrl: url,
         calibration: null,
         arrays: [],
         freePanels: [],
@@ -1592,9 +1595,10 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       setGsiMsg(`地図を取得中…（${geo.label}）`);
       const photo = await buildSeamlessPhoto(geo.lat, geo.lon, gsiZoom, gsiSpan);
       const cal = calibrationFromScale(photo.metersPerPixel, photo.heightPx, 50);
+      // 画像は IndexedDB へ（localStorage 容量対策）。先に保存してから他をリセット。
+      await setImage(photo.dataUrl);
       // 既存の配置・影はクリア（新しい台紙のため）。校正は自動設定。
       patch({
-        imageDataUrl: photo.dataUrl,
         calibration: cal,
         arrays: [],
         freePanels: [],
