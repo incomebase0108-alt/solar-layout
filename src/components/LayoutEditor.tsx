@@ -1998,6 +1998,55 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
     0
   );
 
+  /**
+   * この変更プラン（候補）の作業内容を型式ごとに集計する。
+   * 取り外し＝既設のうち撤去・入換で外すパネル（旧型式）、新規設置＝新設配列＋単独パネル（新型式）、
+   * 流用＝そのまま残す既設。①既設の設定では空（②専用の作業サマリ）。
+   */
+  const changeSummary = useMemo(() => {
+    const removed = new Map<string, number>(); // 取り外す既設（旧型式）
+    const added = new Map<string, number>(); // 新規設置（新型式）
+    const kept = new Map<string, number>(); // 流用
+    const label = (pid: string) => {
+      const p = panels.find((x) => x.id === pid);
+      return p ? `${p.maker} ${p.model}（${p.pmaxW}W）` : "未登録パネル";
+    };
+    const bump = (m: Map<string, number>, pid: string, n = 1) => m.set(pid, (m.get(pid) ?? 0) + n);
+    for (const a of layout.arrays) {
+      const missing = new Set(a.missingCells ?? []);
+      const rem = new Set(a.removedCells ?? []);
+      const keep = a.keepCells ? new Set(a.keepCells) : null;
+      for (let r = 0; r < a.rows; r++)
+        for (let c = 0; c < a.cols; c++) {
+          const k = cellKey(r, c);
+          if (missing.has(k)) continue;
+          const pid = a.cellPanels?.[k] ?? a.panelId;
+          if (keep === null) {
+            // 新設配列：撤去マークの無いセルが新規設置
+            if (!rem.has(k)) bump(added, pid);
+          } else if (rem.has(k)) {
+            bump(removed, pid); // 撤去（更地）＝既設を外す
+          } else if (keep.has(k)) {
+            bump(kept, pid); // 流用
+          } else {
+            bump(removed, pid); // 入換＝既設を外す（新パネルは別の新設配列側で計上）
+          }
+        }
+    }
+    for (const f of layout.freePanels ?? []) bump(added, f.panelId);
+    const toRows = (m: Map<string, number>) =>
+      [...m.entries()].map(([pid, n]) => ({ pid, label: label(pid), count: n })).sort((a, b) => b.count - a.count);
+    const sum = (m: Map<string, number>) => [...m.values()].reduce((s, n) => s + n, 0);
+    return {
+      removed: toRows(removed),
+      added: toRows(added),
+      kept: toRows(kept),
+      removedTotal: sum(removed),
+      addedTotal: sum(added),
+      keptTotal: sum(kept),
+    };
+  }, [layout.arrays, layout.freePanels, panels]);
+
   function deleteZone(id: string) {
     patch({ shadowZones: zones.filter((z) => z.id !== id) });
   }
@@ -2312,6 +2361,70 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
       )}
 
       {/* 変更の検討：既設図面の上に流用/入換・撤去・影を重ねて指定する */}
+      {/* この変更プランの作業内容サマリ（②変更の検討） */}
+      {phase === "henkou" && layout.imageDataUrl && (changeSummary.removedTotal > 0 || changeSummary.addedTotal > 0) && (
+        <div className="card">
+          <h2>この変更プランの作業内容</h2>
+          <div className="hint" style={{ marginTop: 0, marginBottom: 8 }}>
+            いまの図面（この候補）で発生する工事内容です。図面を編集すると自動で更新されます。
+          </div>
+          <table className="list">
+            <thead>
+              <tr>
+                <th>区分</th>
+                <th>パネル型式</th>
+                <th className="num">枚数</th>
+              </tr>
+            </thead>
+            <tbody>
+              {changeSummary.removed.map((row, i) => (
+                <tr key={"rm" + row.pid}>
+                  {i === 0 && (
+                    <td rowSpan={changeSummary.removed.length} style={{ color: "#f43f5e", fontWeight: "bold", verticalAlign: "top" }}>
+                      🗑 取り外す<br /><span className="hint">（撤去・入換）</span>
+                    </td>
+                  )}
+                  <td>{row.label}</td>
+                  <td className="num">{row.count.toLocaleString()}</td>
+                </tr>
+              ))}
+              {changeSummary.added.map((row, i) => (
+                <tr key={"ad" + row.pid}>
+                  {i === 0 && (
+                    <td rowSpan={changeSummary.added.length} style={{ color: "#38bdf8", fontWeight: "bold", verticalAlign: "top" }}>
+                      ＋ 新規設置<br /><span className="hint">（入換・増設）</span>
+                    </td>
+                  )}
+                  <td>{row.label}</td>
+                  <td className="num">{row.count.toLocaleString()}</td>
+                </tr>
+              ))}
+              {changeSummary.kept.map((row, i) => (
+                <tr key={"kp" + row.pid} className="hint">
+                  {i === 0 && (
+                    <td rowSpan={changeSummary.kept.length} style={{ color: KEEP_COLOR, fontWeight: "bold", verticalAlign: "top" }}>
+                      ■ 流用<br /><span className="hint">（そのまま）</span>
+                    </td>
+                  )}
+                  <td>{row.label}</td>
+                  <td className="num">{row.count.toLocaleString()}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td colSpan={2} className="num">取り外し 合計</td>
+                <td className="num" style={{ color: "#f43f5e", fontWeight: "bold" }}>{changeSummary.removedTotal.toLocaleString()} 枚</td>
+              </tr>
+              <tr>
+                <td colSpan={2} className="num">新規設置 合計</td>
+                <td className="num" style={{ color: "#38bdf8", fontWeight: "bold" }}>{changeSummary.addedTotal.toLocaleString()} 枚</td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+      )}
+
       {phase === "henkou" && layout.imageDataUrl && (
         <div className="card">
           {candidateBar}
