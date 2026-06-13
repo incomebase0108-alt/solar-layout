@@ -96,6 +96,8 @@ export default function App() {
           plantName={current.name}
           customerName={current.customerName}
           hasCandidates={(current.candidates?.length ?? 0) > 0}
+          candidateCount={current.candidates?.length ?? 0}
+          clearCandidates={plantStore.clearCandidates}
           candidateBar={
             <CandidateBar
               plant={current}

@@ -171,6 +171,13 @@ export interface PanelArray {
    * 同サイズの別機種が1枚ずつ混在する場合に使う。未指定セルは panelId を使う。
    */
   cellPanels?: Record<string, string>;
+  /**
+   * 「最初からパネルが無い」セル（欠け）のキー一覧。"行,列"。
+   * L字・へこみ等の不定形用：大きめの矩形を置いて無い所を削る。
+   * 撤去（改修で外す）とは別物で、枚数・kW・コスト・結線のすべてから除外される。
+   * 配列の実体（形）の一部なので、既設配列では全候補共通（マスタ側に保存）。
+   */
+  missingCells?: string[];
 }
 
 /**
@@ -245,6 +252,24 @@ export interface LayoutSummary {
 export interface LayoutBaseline extends LayoutSummary {
   /** 登録日時(ミリ秒) */
   registeredAt: number;
+  /**
+   * 登録時点の既設図面の凍結コピー（マーク無しの実体。欠け＝形は含む）。
+   * 数値だけでなく図面も「固定」するためのスナップショット。
+   * 既設マスタが壊れたとき「登録時点に戻す」で復元できる。旧データは undefined（取り直すと付く）。
+   */
+  arrays?: PanelArray[];
+}
+
+/**
+ * 既設配列への候補ごとのマーク（流用/撤去/型式上書き）。
+ * 既設の実体（位置・行列）は existingArrays（発電所共通マスタ）が持ち、
+ * 「どのセルを流用/撤去するか」だけを候補ごとに分けて保存する。
+ */
+export interface ExistingArrayMarks {
+  keepCells?: string[];
+  removedCells?: string[];
+  /** @deprecated 型式の混在は既設の実体としてマスタ（existingArrays）側が持つ。旧データの読み出し互換のみ */
+  cellPanels?: Record<string, string>;
 }
 
 /**
@@ -259,7 +284,17 @@ export interface LayoutProject {
   imageOpacity: number;
   /** スケール校正 */
   calibration: Calibration | null;
-  /** 配置済みパネル配列 */
+  /**
+   * 既設配列のマスタ（発電所に1つ・全候補で共通）。マークは持たない素の実体。
+   * ①既設の設定での実体編集（追加・削除・移動・行列変更）は候補切替時にここへ書き戻され、
+   * すべての候補に反映される。undefined は旧データ（読み込み時に arrays から自動移行）。
+   */
+  existingArrays?: PanelArray[];
+  /**
+   * 配置済みパネル配列（作業コピー＝表示・編集用の合成結果）。
+   * 既設（existingArrays にアクティブ候補のマークを適用したもの。keepCells 定義済み）と
+   * 新設（②で追加。keepCells 未定義）が混在する。
+   */
   arrays: PanelArray[];
   /** 影ゾーン（任意） */
   shadowZones?: ShadowZone[];
@@ -296,7 +331,10 @@ export interface PlanCandidate {
   id: string;
   /** 表示名（候補1, 候補2, …。変更可） */
   name: string;
+  /** 新設配列のみ（既設の実体は layout.existingArrays が共通で持つ） */
   arrays: PanelArray[];
+  /** 既設配列（existingArrays）へのマーク。配列ID→流用/撤去/型式上書き。無い既設は全部流用扱い */
+  existingMarks?: Record<string, ExistingArrayMarks>;
   freePanels?: FreePanel[];
   shadowZones?: ShadowZone[];
   wiringOverrides?: Record<string, WiringOverride>;

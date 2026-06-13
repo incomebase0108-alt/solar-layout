@@ -8,12 +8,15 @@ import type {
   WiringPlan,
   CostRates,
   PlanCandidate,
+  PanelArray,
+  ExistingArrayMarks,
 } from "./types";
 import {
   DEFAULT_CONDITIONS,
   EMPTY_LAYOUT,
   EMPTY_WIRING,
   DEFAULT_COST_RATES,
+  cellKey,
 } from "./types";
 
 // ============================================================
@@ -519,6 +522,85 @@ function newPlant(name: string, layout?: LayoutProject): PowerPlant {
   };
 }
 
+// ===== 既設マスタ（existingArrays）と候補の分解・合成 =====
+// 既設の実体（位置・行列・型式）は発電所に1つだけ持ち（layout.existingArrays）、
+// 候補には「既設へのマーク（流用/撤去/型式上書き）」と「新設配列」だけを保存する。
+// 画面側は従来どおり layout.arrays（合成済みの作業コピー）を使う。
+
+/** 値コピー（参照共有を断つ）。plain object 前提。 */
+function clonePlanData<T>(v: T): T {
+  return JSON.parse(JSON.stringify(v));
+}
+
+/** 配列の全セルキー（マークの無い既設＝全部流用のデフォルトに使う） */
+function allCellKeysOf(a: PanelArray): string[] {
+  const keys: string[] = [];
+  for (let r = 0; r < a.rows; r++) for (let c = 0; c < a.cols; c++) keys.push(cellKey(r, c));
+  return keys;
+}
+
+/** 作業コピーの配列を「既設マスタ実体＋マーク」と「新設」に分解する。 */
+function splitWorkingArrays(arrays: PanelArray[]): {
+  existing: PanelArray[];
+  marks: Record<string, ExistingArrayMarks>;
+  newArrays: PanelArray[];
+} {
+  const existing: PanelArray[] = [];
+  const marks: Record<string, ExistingArrayMarks> = {};
+  const newArrays: PanelArray[] = [];
+  for (const a of arrays ?? []) {
+    if (a.keepCells !== undefined) {
+      // 既設：マーク（流用/撤去）を剥がした実体をマスタへ、マークは候補側へ。
+      // セルごとの型式（cellPanels＝混在の塗り分け）は「何が載っているか」という実体なのでマスタに残す
+      const body: PanelArray = { ...a };
+      delete body.keepCells;
+      delete body.removedCells;
+      existing.push(body);
+      marks[a.id] = { keepCells: a.keepCells, removedCells: a.removedCells };
+    } else {
+      newArrays.push(a);
+    }
+  }
+  return { existing, marks, newArrays };
+}
+
+/** 既設マスタに候補のマークを適用し、新設を足して作業コピー用の配列へ合成する。
+ *  マークの無い既設は「全部流用」スタート（候補2で既設が新設扱いになる事故の構造的防止）。 */
+function composeWorkingArrays(
+  existing: PanelArray[],
+  marks: Record<string, ExistingArrayMarks> | undefined,
+  newArrays: PanelArray[]
+): PanelArray[] {
+  const ex = existing.map((a) => {
+    const m = marks?.[a.id];
+    return {
+      ...a,
+      keepCells: m ? m.keepCells ?? [] : allCellKeysOf(a),
+      removedCells: m?.removedCells,
+      // 型式の混在はマスタ実体が正。旧データ（候補マーク側に持っていた頃）の値はフォールバックで救う
+      cellPanels: a.cellPanels ?? m?.cellPanels,
+    };
+  });
+  return [...ex, ...newArrays];
+}
+
+/** 旧データ移行：existingArrays が無い発電所は、作業コピー（アクティブ候補）から既設マスタを起こす。
+ *  各候補の混在 arrays も「マーク＋新設」に分解する。 */
+function migratePlantToExistingMaster(pl: PowerPlant): PowerPlant {
+  if (pl.layout?.existingArrays !== undefined) return pl;
+  const { existing } = splitWorkingArrays(pl.layout?.arrays ?? []);
+  const masterIds = new Set(existing.map((a) => a.id));
+  const candidates = pl.candidates?.map((c) => {
+    if (c.existingMarks !== undefined) return c;
+    const s = splitWorkingArrays(c.arrays ?? []);
+    // マスタと同IDのマーク無し配列＝既設化前の旧コピー。実体はマスタを正とし、
+    // 候補からは捨てる（マーク無し→合成時に全部流用で復元される）。二重表示の防止。
+    const genuinelyNew = s.newArrays.filter((a) => !masterIds.has(a.id));
+    return { ...c, arrays: genuinelyNew, existingMarks: s.marks };
+  });
+  return { ...pl, layout: { ...pl.layout, existingArrays: existing }, candidates };
+}
+
 /** 初期化：旧 単一レイアウト があれば 1 発電所へ移行。無ければ既定の発電所を作る。 */
 function initialPlants(): PowerPlant[] {
   const saved = load<PowerPlant[] | null>(KEYS.plants, null);
@@ -529,7 +611,8 @@ function initialPlants(): PowerPlant[] {
     } catch {
       /* ignore */
     }
-    return saved;
+    // 既設マスタ（existingArrays）が無い旧データは読み込み時に自動移行する
+    return saved.map(migratePlantToExistingMaster);
   }
   const legacy = load<LayoutProject | null>(KEYS.layout, null);
   // 背景写真なしで配列だけ置いた旧データも移行対象にする
@@ -606,66 +689,91 @@ export function usePlants() {
   );
 
   // ===== 変更の検討の候補（プラン）管理 =====
-  // アクティブ候補の内容は layout / pcsUnits（作業コピー）に展開して既存画面をそのまま使う。
-  // 候補の保存は「切り替え時に作業コピーを書き戻す」方式。
+  // アクティブ候補の内容は layout / pcsUnits（作業コピー＝既設マスタ＋マーク＋新設の合成）に展開して
+  // 既存画面をそのまま使う。候補の保存は「切り替え時に作業コピーを書き戻す」方式。
+  // 書き戻し時に既設の実体は layout.existingArrays（全候補共通マスタ）へ、
+  // マークと新設は候補へ分けて保存する（①での既設修正が全候補に反映される）。
 
-  /** 作業コピー（現在編集中の変更内容）を候補のデータ形式で取り出す。 */
-  const workingPlan = (pl: PowerPlant): Omit<PlanCandidate, "id" | "name"> => ({
-    arrays: pl.layout.arrays,
-    freePanels: pl.layout.freePanels,
-    shadowZones: pl.layout.shadowZones,
-    wiringOverrides: pl.layout.wiringOverrides,
-    legend: pl.layout.legend,
-    pcsUnits: pl.pcsUnits,
-  });
+  /** 作業コピー（現在編集中の変更内容）を候補のデータ形式（マーク＋新設）で取り出す。 */
+  const workingPlan = (pl: PowerPlant): Omit<PlanCandidate, "id" | "name"> => {
+    const { marks, newArrays } = splitWorkingArrays(pl.layout.arrays);
+    return clonePlanData({
+      arrays: newArrays,
+      existingMarks: marks,
+      freePanels: pl.layout.freePanels,
+      shadowZones: pl.layout.shadowZones,
+      wiringOverrides: pl.layout.wiringOverrides,
+      legend: pl.layout.legend,
+      pcsUnits: pl.pcsUnits,
+    });
+  };
 
-  /** 作業コピーをアクティブ候補へ書き戻す。候補未使用なら何もしない。 */
+  /** 作業コピーから既設マスタ（共通）を更新する。 */
+  const refreshExistingMaster = (pl: PowerPlant): PowerPlant => {
+    const { existing } = splitWorkingArrays(pl.layout.arrays);
+    return { ...pl, layout: { ...pl.layout, existingArrays: clonePlanData(existing) } };
+  };
+
+  /** 作業コピーを 既設マスタ＋アクティブ候補 へ書き戻す。候補未使用ならマスタのみ更新。 */
   const saveWorkingToActive = (pl: PowerPlant): PowerPlant => {
-    if (!pl.candidates?.length || !pl.currentCandidateId) return pl;
+    const next = refreshExistingMaster(pl);
+    if (!pl.candidates?.length || !pl.currentCandidateId) return next;
     return {
-      ...pl,
+      ...next,
       candidates: pl.candidates.map((c) =>
         c.id === pl.currentCandidateId ? { ...c, ...workingPlan(pl) } : c
       ),
     };
   };
 
-  /** 候補が無い発電所に、現在の内容を「候補1」として作る。 */
+  /** 候補が無い発電所に、現在の内容を「候補1」として作る（既設マスタも起こす）。 */
   const ensureCandidates = (pl: PowerPlant): PowerPlant => {
     if (pl.candidates?.length) return pl;
     const first: PlanCandidate = { id: uid("cand"), name: "候補1", ...workingPlan(pl) };
-    return { ...pl, candidates: [first], currentCandidateId: first.id };
+    return { ...refreshExistingMaster(pl), candidates: [first], currentCandidateId: first.id };
   };
 
-  /** 候補のデータを作業コピーへ展開する。 */
-  const loadCandidate = (pl: PowerPlant, c: PlanCandidate): PowerPlant => ({
-    ...pl,
-    layout: {
-      ...pl.layout,
-      arrays: c.arrays,
-      freePanels: c.freePanels ?? [],
-      shadowZones: c.shadowZones ?? [],
-      wiringOverrides: c.wiringOverrides,
-      legend: c.legend,
-    },
-    pcsUnits: c.pcsUnits,
-    currentCandidateId: c.id,
-  });
+  /** 候補のデータを作業コピーへ展開する（既設マスタ＋候補マーク＋新設を合成）。
+   *  マークの無い既設は全部流用スタート。実体は必ず値コピーで共有しない。 */
+  const loadCandidate = (pl: PowerPlant, c: PlanCandidate): PowerPlant => {
+    const cc = clonePlanData(c);
+    const master = clonePlanData(pl.layout.existingArrays ?? []);
+    return {
+      ...pl,
+      layout: {
+        ...pl.layout,
+        arrays: composeWorkingArrays(master, cc.existingMarks, cc.arrays ?? []),
+        freePanels: cc.freePanels ?? [],
+        shadowZones: cc.shadowZones ?? [],
+        wiringOverrides: cc.wiringOverrides,
+        legend: cc.legend,
+      },
+      pcsUnits: cc.pcsUnits,
+      currentCandidateId: cc.id,
+    };
+  };
 
-  /** 現在の内容のコピーで新しい候補を作り、それをアクティブにする。 */
+  /** まっさら（既設のみ・全部流用）の新しい候補を作り、それをアクティブにする。
+   *  ※最初の候補（候補1）だけは ensureCandidates が「現在の内容」を取り込む。 */
   const addCandidate = useCallback(() => {
     setPlants((prev) =>
       prev.map((pl) => {
         if (pl.id !== currentId) return pl;
         const base = saveWorkingToActive(ensureCandidates(pl));
         const n = (base.candidates?.length ?? 0) + 1;
-        const copy: PlanCandidate = {
+        const fresh: PlanCandidate = {
           id: uid("cand"),
           name: `候補${n}`,
-          // 流用/撤去マークや構成を引き継いだコピーから検討を始める
-          ...(JSON.parse(JSON.stringify(workingPlan(base))) as Omit<PlanCandidate, "id" | "name">),
+          arrays: [],
+          existingMarks: {},
+          freePanels: [],
+          shadowZones: [],
+          wiringOverrides: undefined,
+          legend: undefined,
+          pcsUnits: undefined,
         };
-        return { ...base, candidates: [...(base.candidates ?? []), copy], currentCandidateId: copy.id };
+        // 作業コピーへ展開（既設マスタ＋全部流用だけの状態で検討を始める）
+        return loadCandidate({ ...base, candidates: [...(base.candidates ?? []), fresh] }, fresh);
       })
     );
   }, [currentId]);
@@ -703,16 +811,53 @@ export function usePlants() {
     [currentId]
   );
 
-  /** 候補を削除する。アクティブ候補を消した場合は残りの先頭を読み込む。最後の1つは消せない。 */
+  /**
+   * 全候補を削除して「候補未使用」状態に戻す（作業コピー＝いま表示中の内容はそのまま残す）。
+   * 既設（地図・写真・校正・向き）を変更すると全候補の前提が狂うため、
+   * 既設変更の確認OK時にこの関数で候補を一掃してから変更を実行する。
+   */
+  const clearCandidates = useCallback(() => {
+    setPlants((prev) =>
+      prev.map((pl) =>
+        // currentCandidateId は残す：App 側の key（再マウント判定）に使われており、
+        // 消すと既設編集中に画面が②へ飛ぶ。候補が空なら参照されないため残しても無害。
+        pl.id === currentId ? { ...pl, candidates: undefined } : pl
+      )
+    );
+  }, [currentId]);
+
+  /** 候補を削除する。アクティブ候補を消した場合は残りの先頭を読み込む。
+   *  最後の1つを消した場合は候補未使用に戻り、作業コピーは既設マスタ（全部流用）だけになる。 */
   const deleteCandidate = useCallback(
     (candId: string) => {
       setPlants((prev) =>
         prev.map((pl) => {
           if (pl.id !== currentId) return pl;
           const list = pl.candidates ?? [];
-          if (list.length <= 1) return pl;
+          if (!list.some((c) => c.id === candId)) return pl;
           const rest = list.filter((c) => c.id !== candId);
-          let next: PowerPlant = { ...pl, candidates: rest };
+          if (rest.length === 0) {
+            // 最後の候補の削除＝変更内容（マーク・新設・凡例・パワコン構成）を破棄し、
+            // 既設マスタだけのまっさらな状態へ。
+            // マスタは必ず現在の作業コピーから更新してから使う（①で直した既設を巻き戻さないため）
+            const refreshed = refreshExistingMaster(pl);
+            const master = clonePlanData(refreshed.layout.existingArrays ?? []);
+            return {
+              ...refreshed,
+              layout: {
+                ...refreshed.layout,
+                arrays: composeWorkingArrays(master, undefined, []),
+                freePanels: [],
+                shadowZones: [],
+                wiringOverrides: undefined,
+                legend: undefined,
+              },
+              pcsUnits: undefined,
+              candidates: undefined,
+            };
+          }
+          // 既設の実体編集は候補に属さないため、候補を捨てる前にマスタへ反映しておく
+          let next: PowerPlant = { ...refreshExistingMaster(pl), candidates: rest };
           if (pl.currentCandidateId === candId) next = loadCandidate(next, rest[0]);
           return next;
         })
@@ -735,5 +880,6 @@ export function usePlants() {
     switchCandidate,
     renameCandidate,
     deleteCandidate,
+    clearCandidates,
   };
 }

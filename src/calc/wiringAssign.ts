@@ -68,12 +68,14 @@ export function assignWiring(
     const panel = panels.find((p) => p.id === a.panelId);
     const dims = panelPxDims(a, panel, ppm);
     const shadedSet = shadedCellKeys(a, dims, zones);
+    const missing = new Set(a.missingCells ?? []);
     const removed = new Set(a.removedCells ?? []);
     const keepSet = new Set(a.keepCells ?? []);
     const hasKeep = keepSet.size > 0;
     for (let r = 0; r < a.rows; r++) {
       for (let c = 0; c < a.cols; c++) {
         const k = cellKey(r, c);
+        if (missing.has(k)) continue; // 欠け（パネル無し）は結線対象外
         if (removed.has(k)) continue;
         if (hasKeep && !keepSet.has(k)) continue; // 入換セルは結線対象外
         const key = `${a.id}:${r},${c}`;

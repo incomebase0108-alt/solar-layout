@@ -12,7 +12,8 @@ interface Props {
  * 変更の検討の候補（プラン）切替バー。
  * 図面（②変更の検討）・パワコン構成・概算コストの3画面で共通に使う。
  * 候補未使用（candidates が空）の発電所では「＋候補を追加」だけを表示し、
- * 追加した時点で現在の内容が候補1として保存され、そのコピー＝候補2から検討が始まる。
+ * 追加した時点で現在の内容が候補1として保存され、候補2はまっさら（既設のみ・全部流用）で始まる。
+ * 以降の追加も常にまっさらから（候補同士は完全に独立）。
  */
 export function CandidateBar({ plant, switchCandidate, addCandidate, renameCandidate, deleteCandidate }: Props) {
   const candidates = plant.candidates ?? [];
@@ -24,9 +25,27 @@ export function CandidateBar({ plant, switchCandidate, addCandidate, renameCandi
   }
 
   function remove(id: string, name: string) {
-    if (confirm(`${name} を削除しますか？（この候補の変更内容・パワコン構成が消えます）`)) {
+    const last = candidates.length <= 1;
+    const msg = last
+      ? `${name} を削除しますか？\n最後の候補なので候補未使用に戻り、図面は既設（全部流用）だけの状態になります。\n（この候補の変更内容・新設・パワコン構成は消えます）`
+      : `${name} を削除しますか？（この候補の変更内容・パワコン構成が消えます）`;
+    if (confirm(msg)) {
       deleteCandidate(id);
     }
+  }
+
+  /** 候補の追加。最初の候補を作る前に、既設変更との関係を一言知らせておく。 */
+  function add() {
+    if (
+      candidates.length === 0 &&
+      !confirm(
+        "変更の検討（候補）を始めます。\n" +
+          "注意：候補を作った後で「① 既設の設定」（地図・写真・校正・向き）を変更すると、全ての候補が削除されます。\n" +
+          "既設の図面を直す予定があれば、先に済ませてから候補を作ってください。\n\nよろしいですか？"
+      )
+    )
+      return;
+    addCandidate();
   }
 
   return (
@@ -43,15 +62,13 @@ export function CandidateBar({ plant, switchCandidate, addCandidate, renameCandi
             {c.id === activeId && (
               <>
                 <button className="cand-icon" title="名前を変更" onClick={() => rename(c.id, c.name)}>✎</button>
-                {candidates.length > 1 && (
-                  <button className="cand-icon" title="この候補を削除" onClick={() => remove(c.id, c.name)}>×</button>
-                )}
+                <button className="cand-icon" title="この候補を削除" onClick={() => remove(c.id, c.name)}>×</button>
               </>
             )}
           </span>
         ))
       )}
-      <button className="btn secondary small" onClick={addCandidate} title="現在の内容をコピーして新しい候補を作る">
+      <button className="btn secondary small" onClick={add} title="まっさら（既設のみ・全部流用）の新しい候補を作る">
         ＋ 候補を追加
       </button>
       <span className="hint" style={{ marginTop: 0 }}>

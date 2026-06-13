@@ -3,12 +3,15 @@ import { cellKey } from "../types";
 
 /**
  * 枚数の数え方。
- * - genkyo（現況・基準）：流用マークのある配列＝全数、無い配列（新設）＝0、単独パネル＝0
- * - kaishu（改修案）    ：流用マークのある配列＝流用数、無い配列（新設）＝全数、単独パネル＝全数
+ * - genkyo（現況・基準）：既設配列＝全数、新設配列＝0、単独パネル＝0
+ * - kaishu（改修案）    ：既設配列＝流用数（全部入換なら入換後の全数）、新設配列＝全数、単独パネル＝全数
  *
- * 考え方：流用マークがある配列＝「既存（一部を流用、残りは入換で撤去）」。
- *   現況ではその既存が丸ごと建っている（全数）。改修案では流用分だけ残る。
- *   流用マークが無い配列＝「新設（入換で新たに載せるパネル）」。現況には無い。
+ * 既設/新設の判定（keepCells の有無で区別する）：
+ *   - keepCells が未定義 ＝「新設配列」（②変更の検討で追加。現況には無い）
+ *   - keepCells が定義済み＝「既設配列」（①既設の設定で作成。作成時に全セル流用が付く）
+ *     - 流用マーク1枚以上：流用分は残し、それ以外は入換＝撤去
+ *     - 流用マーク0枚（全部入換）：既設は全数撤去し、同じグリッドに新パネルを載せる
+ *   ※ 旧データ（keepCells 未定義の既設配列）は②「全部を流用」を一度押せば既設扱いになる。
  */
 export type CountMode = "genkyo" | "kaishu";
 
@@ -30,20 +33,34 @@ export function arrayCellStats(a: PanelArray): {
   removed: number;
   keep: number;
   hasKeep: boolean;
+  /** keepCells が定義済み＝既設配列（空＝全部入換）。未定義＝新設配列。 */
+  marked: boolean;
 } {
-  const removedSet = new Set((a.removedCells ?? []).filter((k) => inGrid(k, a.rows, a.cols)));
-  const keepSet = new Set((a.keepCells ?? []).filter((k) => inGrid(k, a.rows, a.cols)));
+  const missingSet = new Set((a.missingCells ?? []).filter((k) => inGrid(k, a.rows, a.cols)));
+  const removedSet = new Set(
+    (a.removedCells ?? []).filter((k) => inGrid(k, a.rows, a.cols) && !missingSet.has(k))
+  );
+  const keepSet = new Set(
+    (a.keepCells ?? []).filter((k) => inGrid(k, a.rows, a.cols) && !missingSet.has(k))
+  );
   let keep = 0;
   for (const k of keepSet) if (!removedSet.has(k)) keep++;
-  return { grid: a.rows * a.cols, removed: removedSet.size, keep, hasKeep: keepSet.size > 0 };
+  return {
+    // 欠け（最初からパネルが無いセル）は母数から除外する
+    grid: a.rows * a.cols - missingSet.size,
+    removed: removedSet.size,
+    keep,
+    hasKeep: keepSet.size > 0,
+    marked: a.keepCells !== undefined,
+  };
 }
 
 /** 配列1つの、mode に応じた枚数。 */
 export function arrayCountByMode(a: PanelArray, mode: CountMode): number {
   const s = arrayCellStats(a);
-  // 現況（基準）：既存配列は「撤去前の満数」＝元々建っていた枚数（撤去は改修操作なので引かない）。
-  if (mode === "genkyo") return s.hasKeep ? s.grid : 0;
-  // 改修案：既存は流用枚数、新設は撤去後の全数。
+  // 現況（基準）：既設配列は「撤去前の満数」＝元々建っていた枚数（撤去は改修操作なので引かない）。
+  if (mode === "genkyo") return s.marked ? s.grid : 0;
+  // 改修案：既設は流用枚数（全部入換なら入換後の全数）、新設は撤去後の全数。
   return s.hasKeep ? s.keep : s.grid - s.removed;
 }
 
@@ -68,16 +85,19 @@ export function summarizeLayout(
       add(a.panelId, arrayCountByMode(a, mode));
       continue;
     }
-    // セルごとにパネル型式が混在する配列は1セルずつ数える（範囲外の死にキーは除外）
-    const keep = new Set((a.keepCells ?? []).filter((k) => inGrid(k, a.rows, a.cols)));
-    const removed = new Set((a.removedCells ?? []).filter((k) => inGrid(k, a.rows, a.cols)));
+    // セルごとにパネル型式が混在する配列は1セルずつ数える（範囲外の死にキー・欠けセルは除外）
+    const missing = new Set((a.missingCells ?? []).filter((k) => inGrid(k, a.rows, a.cols)));
+    const keep = new Set((a.keepCells ?? []).filter((k) => inGrid(k, a.rows, a.cols) && !missing.has(k)));
+    const removed = new Set((a.removedCells ?? []).filter((k) => inGrid(k, a.rows, a.cols) && !missing.has(k)));
     const hasKeep = keep.size > 0;
+    const marked = a.keepCells !== undefined;
     for (let r = 0; r < a.rows; r++) {
       for (let c = 0; c < a.cols; c++) {
         const k = cellKey(r, c);
+        if (missing.has(k)) continue; // 欠け＝パネルが存在しない
         let counted: boolean;
         if (mode === "genkyo") {
-          counted = hasKeep; // 現況＝既存配列の満数（撤去前）
+          counted = marked; // 現況＝既設配列の満数（撤去前）
         } else {
           counted = removed.has(k) ? false : hasKeep ? keep.has(k) : true;
         }

@@ -38,14 +38,16 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
       const p = panels.find((x) => x.id === a.panelId);
       const pmax = p?.pmaxW ?? 0;
       // 撤去との重複・グリッド外の死にキーを除いた実数で数える（layoutCount と同一ルール）
-      const { grid, removed, keep, hasKeep } = arrayCellStats(a);
-      if (hasKeep) {
-        // 既存配列
+      const { grid, removed, keep, hasKeep, marked } = arrayCellStats(a);
+      if (marked) {
+        // 既設配列：流用以外（入換・撤去）は撤去枚数に計上
         beforeKw += (grid * pmax) / 1000;
         keptKw += (keep * pmax) / 1000;
         removedExisting += grid - keep;
+        // 全部入換（流用0）：既設は全数撤去し、同じグリッドに新パネルを載せる → 新設にも計上
+        if (!hasKeep) addNew(a.panelId, grid - removed);
       } else {
-        // 新設配列
+        // 新設配列（②で追加。既設は無いので撤去は発生しない）
         addNew(a.panelId, grid - removed);
       }
     }

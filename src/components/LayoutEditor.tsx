@@ -7,6 +7,7 @@ import { assignWiring, type WiringAssignResult } from "../calc/wiringAssign";
 import { fileToScaledDataUrl } from "../utils/image";
 import { geocodeAddress, buildSeamlessPhoto, calibrationFromScale } from "../utils/gsiMap";
 import { uid } from "../store";
+import { PanelPicker } from "./PanelPicker";
 
 const KEEP_COLOR = "#22c55e"; // 流用（変更しない）パネルの色
 
@@ -28,6 +29,10 @@ interface Props {
   candidateBar?: ReactNode;
   /** 検討候補を使っているか（候補の切替・追加で再マウントしても②フェーズを維持するため） */
   hasCandidates?: boolean;
+  /** 検討候補の件数（既設変更の確認メッセージに表示） */
+  candidateCount?: number;
+  /** 全候補を削除する（既設変更の確認OK時に呼ぶ） */
+  clearCandidates?: () => void;
 }
 
 interface View {
@@ -36,7 +41,24 @@ interface View {
   zoom: number;
 }
 
-const ARRAY_COLORS = ["#38bdf8", "#22c55e", "#f59e0b", "#a78bfa", "#f472b6"];
+// 配列の色。ピンク(#f472b6)は単独パネル専用のため使わない（混同防止）
+const ARRAY_COLORS = ["#38bdf8", "#22c55e", "#f59e0b", "#a78bfa", "#2dd4bf"];
+
+/** 配列の表示色。旧データでピンク（現在は単独パネル専用色）の配列は表示時だけ読み替える。 */
+function arrayDispColor(c: string): string {
+  return c === "#f472b6" ? "#2dd4bf" : c;
+}
+
+/**
+ * フェーズの引き継ぎ（モジュールスコープ）。
+ * 図面タブを開いたときは必ず①既設の設定から始めるが、候補切替・候補追加では
+ * コンポーネントが即時に作り直されるため、その瞬間は直前のフェーズ（②など）を引き継ぐ。
+ * 仕組み：表示中は常に最新フェーズをここへ共有し（新インスタンスの初期化が
+ * 旧インスタンスの後始末より先に走るため、預けるのは後始末では間に合わない）、
+ * アンマウント後すぐ再マウントされなければタブ離脱とみなして破棄→次に開くと①。
+ */
+let lastPhase: "kisetsu" | "henkou" | null = null;
+let lastPhaseClearTimer: number | undefined;
 
 /** 角度を (-180, 180] に正規化 */
 function normalizeDeg(d: number): number {
@@ -45,7 +67,18 @@ function normalizeDeg(d: number): number {
   return x;
 }
 
-export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, pcsUnits, pcsList, plantName, customerName, candidateBar, hasCandidates }: Props) {
+/**
+ * rows×cols の全セルキー。
+ * ①既設の設定で作った配列には作成時に全セルの流用マークを付ける（＝既設扱い）。
+ * ②変更の検討で追加した配列はマーク無し（＝新設扱い）。概算コスト・前後比較の判定に使う。
+ */
+function allCellKeys(rows: number, cols: number): string[] {
+  const keys: string[] = [];
+  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) keys.push(cellKey(r, c));
+  return keys;
+}
+
+export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, pcsUnits, pcsList, plantName, customerName, candidateBar, hasCandidates, candidateCount, clearCandidates }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgReady, setImgReady] = useState(false);
@@ -81,19 +114,62 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
     if (prev) rawPatch(prev); // 履歴に積まずに丸ごと復元
   }
   const [view, setView] = useState<View>({ tx: 40, ty: 40, zoom: 0.5 });
-  const [mode, setMode] = useState<"pan" | "calibrate" | "select" | "shadow" | "remove" | "scan" | "keeprect" | "removerect" | "cellpanel">("pan");
+  const [mode, setMode] = useState<"pan" | "calibrate" | "select" | "shadow" | "remove" | "scan" | "keeprect" | "removerect" | "cellpanel" | "missing" | "missrect" | "areaselect">("pan");
   // 作業フェーズ：①既設の設定（現況図面づくり）と ②変更の検討（流用・撤去・結線）を分けて表示する。
-  // 基準登録済み or 検討候補を使用中なら変更フェーズから始める。
-  const [phase, setPhase] = useState<"kisetsu" | "henkou">(() =>
-    layout.baseline || hasCandidates ? "henkou" : "kisetsu"
-  );
+  // 図面タブを開いたときは①から始める（既定）。候補切替等の即時再マウント時のみ直前のフェーズを引き継ぐ。
+  const [phase, setPhase] = useState<"kisetsu" | "henkou">(() => lastPhase ?? "kisetsu");
+  useEffect(() => {
+    // 表示中は常に最新フェーズを共有（候補切替の再マウントで新インスタンスがこれを読む）
+    lastPhase = phase;
+  }, [phase]);
+  useEffect(() => {
+    // マウント時：タブ離脱とみなすクリア予約があれば解除（＝即時再マウントだった）
+    if (lastPhaseClearTimer !== undefined) {
+      clearTimeout(lastPhaseClearTimer);
+      lastPhaseClearTimer = undefined;
+    }
+    return () => {
+      // アンマウント時：すぐ再マウントされなければタブ離脱→破棄して次回は①から
+      lastPhaseClearTimer = window.setTimeout(() => {
+        lastPhase = null;
+        lastPhaseClearTimer = undefined;
+      }, 300);
+    };
+  }, []);
   function switchPhase(p: "kisetsu" | "henkou") {
     setPhase(p);
     setMode("pan"); // フェーズ専用の編集モードを持ち越さない
+    setSelectedId(null); // ①は既設のみ表示のため、非表示の新設を選択したまま持ち越さない
+    setSelectedFreeId(null);
+    setSelection(null); // エリア選択も持ち越さない（①と②で対象が違うため）
     if (p === "kisetsu") {
       setWireMode(false);
       setWireEdit(false);
     }
+  }
+  // 既設（地図・写真・校正・向き）は全候補で共有しているため、候補がある状態で変更すると
+  // 全候補の前提（座標・縮尺・下絵）が一斉に狂う。そこでロックはせず、
+  // 変更しようとしたら「全候補が削除されます」と確認し、OKなら候補を一掃してから実行する。
+  // レイアウト以外（基準登録の取り直し等）は対象外＝自由に変更できる。
+  const sharedChangeOkRef = useRef(false);
+  useEffect(() => {
+    // 候補が（再び）作られたら、次の既設変更時にまた確認を出す
+    if (hasCandidates) sharedChangeOkRef.current = false;
+  }, [hasCandidates]);
+  /** 候補がある状態で既設を変更する前の確認。OKなら全候補を削除して true を返す。 */
+  function confirmSharedChange(): boolean {
+    if (!hasCandidates || sharedChangeOkRef.current) return true;
+    const n = candidateCount ?? 0;
+    if (
+      !confirm(
+        `既設（地図・写真・校正・向き）を変更すると、検討候補${n ? `（${n}件）` : ""}が全て削除されます。\n` +
+          "いま画面に表示中の内容だけが残ります。続行しますか？"
+      )
+    )
+      return false;
+    sharedChangeOkRef.current = true;
+    clearCandidates?.();
+    return true;
   }
   // セル単位でパネル型式を変更するときの割り当て先パネルid
   const [cellPanelTarget, setCellPanelTarget] = useState(() => panels[0]?.id ?? "");
@@ -101,6 +177,25 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   const [keepRectValue, setKeepRectValue] = useState(true);
   // 範囲ドラッグで撤去/復活するときの値（true=撤去する, false=戻す）
   const [removeRectValue, setRemoveRectValue] = useState(true);
+  // 範囲ドラッグで欠け（パネルの無い所）を削る/戻すときの値（true=削る, false=戻す）
+  const [missRectValue, setMissRectValue] = useState(true);
+  // 右クリックメニュー（セル単位の編集をマウス位置で行う）。x/y はキャンバス内の画面座標
+  const [ctxMenu, setCtxMenu] = useState<{ x: number; y: number; arrId: string; r: number; col: number } | null>(null);
+  // 右クリックメニューから入った範囲モードは、1回適用したら自動でパンに戻す
+  const rectOnceRef = useRef(false);
+  // ===== エリア選択（select-then-act）=====
+  // ドラッグで選択 → セル集合として保持 → アクションパネルでまとめて操作する。
+  // 配列ID → 選択セルキーの配列。null＝選択なし
+  const [selection, setSelection] = useState<Record<string, string[]> | null>(null);
+  // アクションパネルで選ぶ型式（載せ替え・塗り用）
+  const [selPanelId, setSelPanelId] = useState("");
+  // Shift＋ドラッグ（どのモードからでも選択開始）中かどうか
+  const areaDragRef = useRef(false);
+  // 高速参照用（draw・操作で使う）
+  const selSets = useMemo(() => {
+    if (!selection) return null;
+    return new Map(Object.entries(selection).map(([id, ks]) => [id, new Set(ks)]));
+  }, [selection]);
   // 現状手入力の登録確認メッセージ
   const [manualMsg, setManualMsg] = useState<string | null>(null);
   // パネルにW値を表示するか
@@ -161,9 +256,10 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   const [scanDraft, setScanDraft] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
 
   // 配置フォーム
-  const [formPanelId, setFormPanelId] = useState(panels[0]?.id ?? "");
+  // パネル未選択（""）が既定。選択しないと配列・単独パネルは追加できない（各追加関数でガード）
+  const [formPanelId, setFormPanelId] = useState("");
   const [formOrient, setFormOrient] = useState<"portrait" | "landscape">("landscape"); // 既定は横置き
-  const [formRows, setFormRows] = useState(10);
+  const [formRows, setFormRows] = useState(4); // 低圧の既設アレイは4段が多いため既定4
   const [formCols, setFormCols] = useState(10);
   const [formGapX, setFormGapX] = useState(0.02); // 横方向（列の左右）の隙間 m
   const [formGapY, setFormGapY] = useState(0.02); // 縦方向（行の前後）の隙間 m
@@ -331,6 +427,9 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
 
     // パネル配列
     for (const arr of layout.arrays) {
+      // ①既設の設定は「改修前の既設だけ」を表示する：
+      // ②で追加した新設配列は描かず、撤去・入換マークも無視して既設の満数で描く（汚染防止）
+      if (phase === "kisetsu" && arr.keepCells === undefined) continue;
       const dims = arrayPanelPx(arr);
       const { pw, ph, gapXpx, gapYpx } = dims;
       ctx.save();
@@ -339,13 +438,26 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       const selected = arr.id === selectedId;
       const keep = new Set(arr.keepCells ?? []);
       const removed = new Set(arr.removedCells ?? []);
+      const missing = new Set(arr.missingCells ?? []);
+      const areaSel = selSets?.get(arr.id);
       const shaded = shadedCellKeys(arr, dims, zones);
       for (let r = 0; r < arr.rows; r++) {
         for (let col = 0; col < arr.cols; col++) {
           const x = col * (pw + gapXpx);
           const y = r * (ph + gapYpx);
-          // 撤去セルは空き枠（破線）で表示し、カウントしない
-          if (removed.has(cellKey(r, col))) {
+          // 欠け（最初からパネルが無い）セルは描かない。編集モード中だけ赤破線のゴーストで示し、戻せるようにする
+          if (missing.has(cellKey(r, col))) {
+            if (mode === "missing" || mode === "missrect") {
+              ctx.strokeStyle = "#f43f5e";
+              ctx.lineWidth = 1 / view.zoom;
+              ctx.setLineDash([3 / view.zoom, 3 / view.zoom]);
+              ctx.strokeRect(x, y, pw, ph);
+              ctx.setLineDash([]);
+            }
+            continue;
+          }
+          // 撤去セルは空き枠（破線）で表示し、カウントしない（②のみ。①は既設満数で表示）
+          if (phase === "henkou" && removed.has(cellKey(r, col))) {
             ctx.strokeStyle = "#64748b";
             ctx.lineWidth = 1 / view.zoom;
             ctx.setLineDash([4 / view.zoom, 3 / view.zoom]);
@@ -398,9 +510,10 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
             }
             continue;
           }
-          const isKeep = keep.has(cellKey(r, col));
-          ctx.fillStyle = (isKeep ? KEEP_COLOR : arr.color) + (isKeep ? "66" : "44");
-          ctx.strokeStyle = isKeep ? KEEP_COLOR : selected ? "#fff" : arr.color;
+          // 流用＝緑は②変更の検討でのみ表示（①は既設づくり中で全数流用のため色分け不要）
+          const isKeep = phase === "henkou" && keep.has(cellKey(r, col));
+          ctx.fillStyle = (isKeep ? KEEP_COLOR : arrayDispColor(arr.color)) + (isKeep ? "66" : "44");
+          ctx.strokeStyle = isKeep ? KEEP_COLOR : selected ? "#fff" : arrayDispColor(arr.color);
           ctx.lineWidth = (isKeep ? 1.5 : selected ? 2 : 1) / view.zoom;
           ctx.fillRect(x, y, pw, ph);
           ctx.strokeRect(x, y, pw, ph);
@@ -428,6 +541,14 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
             ctx.textAlign = "start";
             ctx.textBaseline = "alphabetic";
           }
+          // エリア選択中のセルは白ハイライト
+          if (areaSel?.has(cellKey(r, col))) {
+            ctx.fillStyle = "rgba(255,255,255,0.28)";
+            ctx.fillRect(x, y, pw, ph);
+            ctx.strokeStyle = "#fff";
+            ctx.lineWidth = 2 / view.zoom;
+            ctx.strokeRect(x, y, pw, ph);
+          }
         }
       }
       // 選択枠
@@ -442,8 +563,8 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       ctx.restore();
     }
 
-    // 単独パネル
-    for (const fp of layout.freePanels ?? []) {
+    // 単独パネル（新設扱いのため①既設の設定では表示しない）
+    for (const fp of phase === "henkou" ? layout.freePanels ?? [] : []) {
       const { pw, ph } = freePanelPx(fp);
       ctx.save();
       ctx.translate(fp.posXpx, fp.posYpx);
@@ -459,6 +580,18 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       if (pointInZones(ctr.x, ctr.y, zones)) {
         ctx.fillStyle = "rgba(15,23,42,0.55)";
         ctx.fillRect(-pw / 2, -ph / 2, pw, ph);
+      }
+      // パネルのW値を表示（配列セルと同じ見せ方）。ズーム十分なときのみ。
+      const fpPanel = panels.find((p) => p.id === fp.panelId);
+      const fpFsW = Math.min(ph * 0.4, pw * 0.42);
+      if (showW && fpPanel && fpFsW * view.zoom >= 5) {
+        ctx.fillStyle = "#0b1220";
+        ctx.font = `bold ${fpFsW}px sans-serif`;
+        ctx.textAlign = "center";
+        ctx.textBaseline = "middle";
+        ctx.fillText(String(fpPanel.pmaxW), 0, 0);
+        ctx.textAlign = "start";
+        ctx.textBaseline = "alphabetic";
       }
       if (sel) {
         ctx.strokeStyle = "#fff";
@@ -511,7 +644,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       ctx.strokeRect(scanDraft.x, scanDraft.y, scanDraft.w, scanDraft.h);
       ctx.setLineDash([]);
     }
-  }, [view, rot, layout, selectedId, selectedFreeId, calibPts, shadowDraft, scanDraft, wiring, showW, arrayPanelPx, freePanelPx]);
+  }, [view, rot, layout, selectedId, selectedFreeId, calibPts, shadowDraft, scanDraft, wiring, showW, arrayPanelPx, freePanelPx, phase, mode, selSets]);
 
   useEffect(() => {
     draw();
@@ -547,6 +680,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   const scanStartRef = useRef<{ sx: number; sy: number } | null>(null);
 
   function hitFree(ix: number, iy: number): FreePanel | null {
+    if (phase === "kisetsu") return null; // ①では単独パネル（新設）は非表示＝操作対象外
     const fps = layout.freePanels ?? [];
     for (let i = fps.length - 1; i >= 0; i--) {
       const fp = fps[i];
@@ -574,6 +708,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   function hitArray(ix: number, iy: number): PanelArray | null {
     for (let i = layout.arrays.length - 1; i >= 0; i--) {
       const arr = layout.arrays[i];
+      if (phase === "kisetsu" && arr.keepCells === undefined) continue; // ①では新設は非表示＝操作対象外
       const { pw, ph, gapXpx, gapYpx } = arrayPanelPx(arr);
       const totalW = arr.cols * pw + (arr.cols - 1) * gapXpx;
       const totalH = arr.rows * ph + (arr.rows - 1) * gapYpx;
@@ -591,6 +726,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   function hitCell(ix: number, iy: number): { arr: PanelArray; r: number; col: number } | null {
     for (let i = layout.arrays.length - 1; i >= 0; i--) {
       const arr = layout.arrays[i];
+      if (phase === "kisetsu" && arr.keepCells === undefined) continue; // ①では新設は非表示＝操作対象外
       const { pw, ph, gapXpx, gapYpx } = arrayPanelPx(arr);
       const dx = ix - arr.posXpx;
       const dy = iy - arr.posYpx;
@@ -610,7 +746,10 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   }
 
   function toggleCell(arr: PanelArray, r: number, col: number) {
+    // 流用/入換マークは既設配列のみ（新設を既設化しない）。欠けセルは対象外
+    if (arr.keepCells === undefined) return;
     const key = cellKey(r, col);
+    if (new Set(arr.missingCells ?? []).has(key)) return;
     const keep = new Set(arr.keepCells ?? []);
     if (keep.has(key)) keep.delete(key);
     else keep.add(key);
@@ -623,6 +762,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
 
   function toggleRemove(arr: PanelArray, r: number, col: number) {
     const key = cellKey(r, col);
+    if (new Set(arr.missingCells ?? []).has(key)) return; // 欠け（パネル無し）は撤去対象外
     const removed = new Set(arr.removedCells ?? []);
     if (removed.has(key)) removed.delete(key);
     else removed.add(key);
@@ -636,6 +776,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   /** セルのパネル型式を割り当てる。配列の既定型式と同じなら上書きを解除。 */
   function setCellPanel(arr: PanelArray, r: number, col: number, panelId: string) {
     const key = cellKey(r, col);
+    if (new Set(arr.missingCells ?? []).has(key)) return; // 欠け（パネル無し）には割り当てない
     const cp = { ...(arr.cellPanels ?? {}) };
     if (panelId === arr.panelId) delete cp[key];
     else cp[key] = panelId;
@@ -644,40 +785,182 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
     });
   }
 
-  function setAllCells(arrId: string, keepAll: boolean) {
+  // ===== エリア選択への一括操作（select-then-act） =====
+
+  /** 選択セルを含む配列に変換を適用する共通処理。 */
+  function applyToSelection(transform: (a: PanelArray, keys: Set<string>) => PanelArray) {
+    if (!selSets) return;
     patch({
       arrays: layout.arrays.map((a) => {
-        if (a.id !== arrId) return a;
-        if (!keepAll) return { ...a, keepCells: [] };
-        const all: string[] = [];
-        for (let r = 0; r < a.rows; r++)
-          for (let c = 0; c < a.cols; c++) all.push(cellKey(r, c));
-        return { ...a, keepCells: all };
+        const keys = selSets.get(a.id);
+        return keys?.size ? transform(a, keys) : a;
       }),
     });
   }
 
-  function invertCells(arrId: string) {
+  /** 選択を撤去（更地）にする（②）。 */
+  function selRemove() {
+    applyToSelection((a, keys) => {
+      const removed = new Set(a.removedCells ?? []);
+      keys.forEach((k) => removed.add(k));
+      return { ...a, removedCells: [...removed] };
+    });
+  }
+
+  /** 選択を流用に戻す＝入換・撤去をまとめて取り消し（②・既設のみ）。 */
+  function selRestore() {
+    applyToSelection((a, keys) => {
+      if (a.keepCells === undefined) return a;
+      const keep = new Set(a.keepCells);
+      const removed = new Set(a.removedCells ?? []);
+      keys.forEach((k) => {
+        keep.add(k);
+        removed.delete(k);
+      });
+      return { ...a, keepCells: [...keep], removedCells: a.removedCells ? [...removed] : undefined };
+    });
+  }
+
+  /** 選択セルの型式を塗る（既設実体の混在修正。マスタ＝全候補共通）。 */
+  function selPaint(pid: string) {
+    if (!pid) return;
+    applyToSelection((a, keys) => {
+      const cp = { ...(a.cellPanels ?? {}) };
+      keys.forEach((k) => {
+        if (pid === a.panelId) delete cp[k];
+        else cp[k] = pid;
+      });
+      return { ...a, cellPanels: cp };
+    });
+  }
+
+  /** 選択を削る（欠け＝最初から無い所、①）。 */
+  function selCarve() {
+    applyToSelection((a, keys) => {
+      const missing = new Set(a.missingCells ?? []);
+      const keep = a.keepCells ? new Set(a.keepCells) : null;
+      const removed = new Set(a.removedCells ?? []);
+      keys.forEach((k) => {
+        missing.add(k);
+        keep?.delete(k);
+        removed.delete(k);
+      });
+      return {
+        ...a,
+        missingCells: missing.size ? [...missing] : undefined,
+        keepCells: keep ? [...keep] : undefined,
+        removedCells: a.removedCells ? [...removed] : undefined,
+      };
+    });
+    setSelection(null); // 削ったセルは存在しなくなるので選択も解除
+  }
+
+  /**
+   * 載せ替え（②の本命機能）：選択した既設セルを入換にし、
+   * 同じ位置に選んだ型式の新設配列を自動生成する（非選択セルは欠けで形を合わせる）。
+   * これまで手作業だった「撤去マーク＋新設配列を重ねて位置合わせ」を1コマンド化。
+   */
+  function selReplace(pid: string) {
+    if (!pid || !selSets) return;
+    const newArrays: PanelArray[] = [];
+    const updated = layout.arrays.map((a) => {
+      const keys = selSets.get(a.id);
+      if (!keys?.size) return a;
+      if (a.keepCells === undefined) return a; // 新設配列は載せ替え対象外
+      // 1) 選択セルを入換（流用解除）に
+      const keep = new Set(a.keepCells);
+      keys.forEach((k) => keep.delete(k));
+      // 2) 選択範囲のバウンディングボックスで新設配列を同位置に生成
+      let rmin = Infinity, rmax = -1, cmin = Infinity, cmax = -1;
+      for (const k of keys) {
+        const i = k.indexOf(",");
+        const r = Number(k.slice(0, i));
+        const c = Number(k.slice(i + 1));
+        if (r < rmin) rmin = r;
+        if (r > rmax) rmax = r;
+        if (c < cmin) cmin = c;
+        if (c > cmax) cmax = c;
+      }
+      const rows = rmax - rmin + 1;
+      const cols = cmax - cmin + 1;
+      const { pw, ph, gapXpx, gapYpx } = arrayPanelPx(a);
+      const rad = (a.rotationDeg * Math.PI) / 180;
+      const lx = cmin * (pw + gapXpx);
+      const ly = rmin * (ph + gapYpx);
+      const missing: string[] = [];
+      for (let r = 0; r < rows; r++)
+        for (let c = 0; c < cols; c++)
+          if (!keys.has(cellKey(r + rmin, c + cmin))) missing.push(cellKey(r, c));
+      newArrays.push({
+        id: uid("arr"),
+        panelId: pid,
+        orientation: a.orientation,
+        rows,
+        cols,
+        gapM: a.gapM,
+        gapYm: a.gapYm,
+        posXpx: a.posXpx + Math.cos(rad) * lx - Math.sin(rad) * ly,
+        posYpx: a.posYpx + Math.sin(rad) * lx + Math.cos(rad) * ly,
+        rotationDeg: a.rotationDeg,
+        color: ARRAY_COLORS[(layout.arrays.length + newArrays.length) % ARRAY_COLORS.length],
+        ...(missing.length ? { missingCells: missing } : {}),
+      });
+      return { ...a, keepCells: [...keep] };
+    });
+    patch({ arrays: [...updated, ...newArrays] });
+    setSelection(null);
+  }
+
+  /** 配列単位の撤去指定。removeAll=true で全パネルを撤去（更地・載せ替えなし）、false で撤去を全解除。
+   *  欠け（最初から無いセル）は対象外。撤去は候補ごとのマークなので他の候補には影響しない。 */
+  function setAllRemoved(arrId: string, removeAll: boolean) {
     patch({
       arrays: layout.arrays.map((a) => {
         if (a.id !== arrId) return a;
-        const keep = new Set(a.keepCells ?? []);
-        const next: string[] = [];
+        if (!removeAll) return { ...a, removedCells: [] };
+        const missing = new Set(a.missingCells ?? []);
+        const all: string[] = [];
         for (let r = 0; r < a.rows; r++)
           for (let c = 0; c < a.cols; c++) {
             const k = cellKey(r, c);
-            if (!keep.has(k)) next.push(k);
+            if (!missing.has(k)) all.push(k);
           }
-        return { ...a, keepCells: next };
+        return { ...a, removedCells: all };
       }),
     });
   }
 
-  function onMouseDown(e: React.MouseEvent) {
+  /** 右クリック：クリックしたパネル（セル）の編集メニューをマウス位置に出す。 */
+  function onContextMenu(e: React.MouseEvent) {
+    e.preventDefault();
     const c = canvasRef.current!;
     const rect = c.getBoundingClientRect();
     const sx = e.clientX - rect.left;
     const sy = e.clientY - rect.top;
+    const img = screenToImage(sx, sy);
+    const cell = hitCell(img.x, img.y);
+    if (cell) {
+      setSelectedId(cell.arr.id);
+      setSelectedFreeId(null);
+      setCtxMenu({ x: sx, y: sy, arrId: cell.arr.id, r: cell.r, col: cell.col });
+    } else {
+      setCtxMenu(null);
+    }
+  }
+
+  function onMouseDown(e: React.MouseEvent) {
+    if (ctxMenu) setCtxMenu(null); // 左クリックでメニューを閉じる
+    const c = canvasRef.current!;
+    const rect = c.getBoundingClientRect();
+    const sx = e.clientX - rect.left;
+    const sy = e.clientY - rect.top;
+
+    // エリア選択：選択モード中、または Shift＋ドラッグ（どのモードからでも）
+    if (mode === "areaselect" || e.shiftKey) {
+      areaDragRef.current = true;
+      scanStartRef.current = { sx, sy };
+      return;
+    }
 
     // 結線の手編集：パネルをクリックで選択中の PC-ストリング-並列 に上書き割付
     if (wireMode && wireEdit) {
@@ -700,9 +983,19 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       return;
     }
 
-    if (mode === "scan" || mode === "keeprect" || mode === "removerect") {
-      // 画面座標で記録（回転後の見た目に沿って囲む）。scan/範囲流用/範囲撤去 で共用。
+    if (mode === "scan" || mode === "keeprect" || mode === "removerect" || mode === "missrect") {
+      // 画面座標で記録（回転後の見た目に沿って囲む）。scan/範囲流用/範囲撤去/範囲欠け で共用。
       scanStartRef.current = { sx, sy };
+      return;
+    }
+
+    if (mode === "missing") {
+      const img = screenToImage(sx, sy);
+      const cell = hitCell(img.x, img.y);
+      if (cell) {
+        setSelectedId(cell.arr.id);
+        toggleMissing(cell.arr, cell.r, cell.col);
+      }
       return;
     }
 
@@ -783,6 +1076,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
     } else {
       setSelectedId(null);
       setSelectedFreeId(null);
+      setSelection(null); // 空白クリックでエリア選択を解除
       dragRef.current = {
         kind: "pan",
         startSx: sx,
@@ -805,8 +1099,15 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       return;
     }
 
-    // スキャン／範囲流用／範囲撤去のドラッグ矩形描画（画面座標＝回転後の見た目に沿う）
-    if ((mode === "scan" || mode === "keeprect" || mode === "removerect") && scanStartRef.current) {
+    // スキャン／範囲流用／範囲撤去／範囲欠け／エリア選択のドラッグ矩形描画（画面座標＝回転後の見た目に沿う）
+    if ((mode === "scan" || mode === "keeprect" || mode === "removerect" || mode === "missrect" || areaDragRef.current) && scanStartRef.current) {
+      // ボタンを離したまま戻ってきた場合（キャンバス外でアップ）はドラフトを破棄
+      if (!(e.buttons & 1)) {
+        scanStartRef.current = null;
+        areaDragRef.current = false;
+        setScanDraft(null);
+        return;
+      }
       const s = scanStartRef.current;
       setScanDraft({
         x: Math.min(s.sx, sx),
@@ -856,6 +1157,25 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   function onMouseUp() {
     dragRef.current = null;
     gestureRef.current = null; // ドラッグ終了。次のドラッグは別の履歴として積む
+    // エリア選択の確定：囲んだ範囲をセル集合に変換して保持
+    if (areaDragRef.current && scanStartRef.current) {
+      areaDragRef.current = false;
+      scanStartRef.current = null;
+      if (scanDraft && scanDraft.w > 4 && scanDraft.h > 4) {
+        const map = cellsInScreenRect(scanDraft);
+        if (map.size) {
+          const obj: Record<string, string[]> = {};
+          for (const [id, keys] of map) obj[id] = [...keys];
+          setSelection(obj);
+          setSelPanelId("");
+        } else {
+          setSelection(null);
+        }
+      }
+      setScanDraft(null);
+      if (mode === "areaselect") setMode("pan"); // 選択できたら通常操作へ（再選択は Shift＋ドラッグ）
+      return;
+    }
     // 影ゾーンの確定
     if (mode === "shadow" && shadowStartRef.current) {
       shadowStartRef.current = null;
@@ -865,15 +1185,21 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       }
       setShadowDraft(null);
     }
-    // スキャン／範囲流用／範囲撤去：画面で囲んだ範囲を確定
-    if ((mode === "scan" || mode === "keeprect" || mode === "removerect") && scanStartRef.current) {
+    // スキャン／範囲流用／範囲撤去／範囲欠け：画面で囲んだ範囲を確定
+    if ((mode === "scan" || mode === "keeprect" || mode === "removerect" || mode === "missrect") && scanStartRef.current) {
       scanStartRef.current = null;
       if (scanDraft && scanDraft.w > 4 && scanDraft.h > 4) {
         if (mode === "scan") scanFromScreenRect(scanDraft);
         else if (mode === "keeprect") applyKeepRect(scanDraft, keepRectValue);
+        else if (mode === "missrect") applyMissingRect(scanDraft, missRectValue);
         else applyRemoveRect(scanDraft, removeRectValue);
       }
       setScanDraft(null);
+      // 右クリックメニュー経由の範囲指定は1回で完了し、続けてドラッグ移動できるようにする
+      if (rectOnceRef.current) {
+        rectOnceRef.current = false;
+        setMode("pan");
+      }
     }
   }
 
@@ -891,15 +1217,17 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       const cos = Math.cos(a);
       const sin = Math.sin(a);
       const removed = new Set(arr.removedCells ?? []);
+      const missingSet = new Set(arr.missingCells ?? []);
       for (let row = 0; row < arr.rows; row++) {
         for (let col = 0; col < arr.cols; col++) {
+          const k = cellKey(row, col);
+          if (missingSet.has(k)) continue; // 欠け（パネル無し）は撤去対象外
           const lx = col * (pw + gapXpx) + pw / 2;
           const ly = row * (ph + gapYpx) + ph / 2;
           const ix = arr.posXpx + cos * lx - sin * ly;
           const iy = arr.posYpx + sin * lx + cos * ly;
           const s = imageToScreen(ix, iy);
           if (s.x >= r.x && s.x <= x2 && s.y >= r.y && s.y <= y2) {
-            const k = cellKey(row, col);
             if (value) removed.add(k);
             else removed.delete(k);
           }
@@ -911,10 +1239,46 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   }
 
   /**
-   * 画面で囲んだ範囲内のセルをまとめて流用/入換にする。
-   * value=true で流用（緑）に、false で入換に。撤去セルは対象外。
+   * 画面で囲んだ矩形に中心が入るセルを、配列ごとに集める（欠けセルは除外）。
+   * エリア選択・範囲操作の共通幾何計算。
    */
-  function applyKeepRect(r: { x: number; y: number; w: number; h: number }, value: boolean) {
+  function cellsInScreenRect(r: { x: number; y: number; w: number; h: number }): Map<string, Set<string>> {
+    const x2 = r.x + r.w;
+    const y2 = r.y + r.h;
+    const out = new Map<string, Set<string>>();
+    for (const arr of layout.arrays) {
+      // ①既設の設定では新設（非表示）を選択対象にしない
+      if (phase === "kisetsu" && arr.keepCells === undefined) continue;
+      const dims = arrayPanelPx(arr);
+      const { pw, ph, gapXpx, gapYpx } = dims;
+      const a = (arr.rotationDeg * Math.PI) / 180;
+      const cos = Math.cos(a);
+      const sin = Math.sin(a);
+      const missing = new Set(arr.missingCells ?? []);
+      const keys = new Set<string>();
+      for (let row = 0; row < arr.rows; row++) {
+        for (let col = 0; col < arr.cols; col++) {
+          const k = cellKey(row, col);
+          if (missing.has(k)) continue;
+          const lx = col * (pw + gapXpx) + pw / 2;
+          const ly = row * (ph + gapYpx) + ph / 2;
+          const ix = arr.posXpx + cos * lx - sin * ly;
+          const iy = arr.posYpx + sin * lx + cos * ly;
+          const s = imageToScreen(ix, iy);
+          if (s.x >= r.x && s.x <= x2 && s.y >= r.y && s.y <= y2) keys.add(k);
+        }
+      }
+      if (keys.size) out.set(arr.id, keys);
+    }
+    return out;
+  }
+
+  /**
+   * 画面で囲んだ範囲のセルをまとめて欠け（最初からパネルが無い）にする/戻す。
+   * L字・へこみ等の不定形の削り出し用。欠けにしたセルはマークも掃除し、
+   * 戻したセルは既設配列なら流用に戻す（入換扱いで撤去に数えられないように）。
+   */
+  function applyMissingRect(r: { x: number; y: number; w: number; h: number }, value: boolean) {
     const x2 = r.x + r.w;
     const y2 = r.y + r.h;
     const arrays = layout.arrays.map((arr) => {
@@ -923,12 +1287,91 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       const a = (arr.rotationDeg * Math.PI) / 180;
       const cos = Math.cos(a);
       const sin = Math.sin(a);
-      const keep = new Set(arr.keepCells ?? []);
+      const missing = new Set(arr.missingCells ?? []);
+      const keep = arr.keepCells ? new Set(arr.keepCells) : null;
       const removed = new Set(arr.removedCells ?? []);
       for (let row = 0; row < arr.rows; row++) {
         for (let col = 0; col < arr.cols; col++) {
+          const lx = col * (pw + gapXpx) + pw / 2;
+          const ly = row * (ph + gapYpx) + ph / 2;
+          const ix = arr.posXpx + cos * lx - sin * ly;
+          const iy = arr.posYpx + sin * lx + cos * ly;
+          const s = imageToScreen(ix, iy);
+          if (s.x >= r.x && s.x <= x2 && s.y >= r.y && s.y <= y2) {
+            const k = cellKey(row, col);
+            if (value) {
+              missing.add(k);
+              keep?.delete(k);
+              removed.delete(k);
+            } else if (missing.has(k)) {
+              missing.delete(k);
+              keep?.add(k); // 復活したセルは既設なら流用スタート
+            }
+          }
+        }
+      }
+      return {
+        ...arr,
+        missingCells: missing.size ? [...missing] : undefined,
+        keepCells: keep ? [...keep] : undefined,
+        removedCells: arr.removedCells ? [...removed] : undefined,
+      };
+    });
+    patch({ arrays });
+  }
+
+  /** セル1つの欠け（最初からパネルが無い）を切り替える。 */
+  function toggleMissing(arr: PanelArray, r: number, col: number) {
+    const key = cellKey(r, col);
+    const missing = new Set(arr.missingCells ?? []);
+    const keep = arr.keepCells ? new Set(arr.keepCells) : null;
+    const removed = new Set(arr.removedCells ?? []);
+    if (missing.has(key)) {
+      missing.delete(key);
+      keep?.add(key); // 復活したセルは既設なら流用スタート
+    } else {
+      missing.add(key);
+      keep?.delete(key);
+      removed.delete(key);
+    }
+    patch({
+      arrays: layout.arrays.map((a) =>
+        a.id === arr.id
+          ? {
+              ...a,
+              missingCells: missing.size ? [...missing] : undefined,
+              keepCells: keep ? [...keep] : undefined,
+              removedCells: a.removedCells ? [...removed] : undefined,
+            }
+          : a
+      ),
+    });
+  }
+
+  /**
+   * 画面で囲んだ範囲内のセルをまとめて流用/入換にする。
+   * value=true：流用（緑・変更しない）に戻す＝入換も撤去もまとめて解除（取り消し機能）。
+   * value=false：入換にする（撤去セルはそのまま）。
+   */
+  function applyKeepRect(r: { x: number; y: number; w: number; h: number }, value: boolean) {
+    const x2 = r.x + r.w;
+    const y2 = r.y + r.h;
+    const arrays = layout.arrays.map((arr) => {
+      // 流用/入換マークは既設配列（マーク定義済み）のみ。新設配列を巻き込んで既設化しない
+      if (arr.keepCells === undefined) return arr;
+      const dims = arrayPanelPx(arr);
+      const { pw, ph, gapXpx, gapYpx } = dims;
+      const a = (arr.rotationDeg * Math.PI) / 180;
+      const cos = Math.cos(a);
+      const sin = Math.sin(a);
+      const keep = new Set(arr.keepCells ?? []);
+      const removed = new Set(arr.removedCells ?? []);
+      const missing = new Set(arr.missingCells ?? []);
+      for (let row = 0; row < arr.rows; row++) {
+        for (let col = 0; col < arr.cols; col++) {
           const k = cellKey(row, col);
-          if (removed.has(k)) continue;
+          if (missing.has(k)) continue;
+          if (!value && removed.has(k)) continue; // 入換指定は撤去セルを触らない
           // セル中心の画像座標（配列の回転を反映）→ 画面座標
           const lx = col * (pw + gapXpx) + pw / 2;
           const ly = row * (ph + gapYpx) + ph / 2;
@@ -936,12 +1379,16 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
           const iy = arr.posYpx + sin * lx + cos * ly;
           const s = imageToScreen(ix, iy);
           if (s.x >= r.x && s.x <= x2 && s.y >= r.y && s.y <= y2) {
-            if (value) keep.add(k);
-            else keep.delete(k);
+            if (value) {
+              keep.add(k);
+              removed.delete(k); // 流用に戻す＝撤去も解除
+            } else {
+              keep.delete(k);
+            }
           }
         }
       }
-      return { ...arr, keepCells: [...keep] };
+      return { ...arr, keepCells: [...keep], removedCells: arr.removedCells ? [...removed] : undefined };
     });
     patch({ arrays });
   }
@@ -993,6 +1440,8 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       posYpx: tl.y,
       rotationDeg: arrRot,
       color: ARRAY_COLORS[layout.arrays.length % ARRAY_COLORS.length],
+      // ①で作った配列＝既設（全セル流用スタート）。②で追加＝新設（マーク無し）
+      ...(phase === "kisetsu" ? { keepCells: allCellKeys(rows, cols) } : {}),
     };
     patch({ arrays: [...layout.arrays, arr] });
     setSelectedId(arr.id);
@@ -1039,6 +1488,10 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
+    if (!confirmSharedChange()) {
+      e.target.value = "";
+      return;
+    }
     try {
       const url = await fileToScaledDataUrl(file);
       patch({ imageDataUrl: url, calibration: null, arrays: [] });
@@ -1055,6 +1508,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       setGsiMsg("住所を入力してください");
       return;
     }
+    if (!confirmSharedChange()) return;
     setGsiBusy(true);
     setGsiMsg("住所を検索中…");
     try {
@@ -1091,6 +1545,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
    * 拡大中でも見ている被写体が画面外へ飛ばない。
    */
   function setRotation(newDeg: number) {
+    if (!confirmSharedChange()) return;
     const c = canvasRef.current;
     const deg = ((newDeg % 360) + 360) % 360;
     if (!c) {
@@ -1317,9 +1772,13 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
       // 画面の見た目（回転後）に合わせる。スキャンのグリッドと同じ向きになる。
       rotationDeg: normalizeDeg(-layout.imageRotationDeg),
       color: ARRAY_COLORS[layout.arrays.length % ARRAY_COLORS.length],
+      // ①で作った配列＝既設（全セル流用スタート）。②で追加＝新設（マーク無し）
+      ...(phase === "kisetsu" ? { keepCells: allCellKeys(formRows, formCols) } : {}),
     };
     patch({ arrays: [...layout.arrays, arr] });
     setSelectedId(arr.id);
+    // 挿入直後はドラッグで位置調整できるように編集モードを解除（撤去/入換モードのままだと動かせない）
+    setMode("pan");
   }
 
   function updateArray(id: string, p: Partial<PanelArray>, gesture?: string) {
@@ -1330,6 +1789,8 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
   /**
    * 行数・列数の変更。1未満や小数を防ぎ、新しいグリッドの範囲外になった
    * 流用/撤去/型式上書きのマークを掃除する（残すと枚数集計や表示が狂う）。
+   * keepCells の有無は既設/新設の判定に使うため、未定義の配列（新設）には生やさない。
+   * 流用マークのある既設配列を拡大した場合は、増えたセルにも流用マークを付ける。
    */
   function resizeArray(id: string, p: { rows?: number; cols?: number }) {
     patch({
@@ -1346,19 +1807,46 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
         const cellPanels = a.cellPanels
           ? Object.fromEntries(Object.entries(a.cellPanels).filter(([k]) => ok(k)))
           : undefined;
+        let keepCells = a.keepCells ? a.keepCells.filter(ok) : undefined;
+        if (keepCells && a.keepCells!.length > 0) {
+          // 流用マークのある既設配列：拡大で増えたセルも既設＝流用にする
+          const set = new Set(keepCells);
+          for (let r = 0; r < rows; r++)
+            for (let c = 0; c < cols; c++)
+              if (r >= a.rows || c >= a.cols) set.add(cellKey(r, c));
+          keepCells = [...set];
+        }
         return {
           ...a,
           rows,
           cols,
-          keepCells: (a.keepCells ?? []).filter(ok),
-          removedCells: (a.removedCells ?? []).filter(ok),
+          keepCells,
+          removedCells: a.removedCells ? a.removedCells.filter(ok) : undefined,
+          missingCells: a.missingCells ? a.missingCells.filter(ok) : undefined,
           cellPanels,
         };
       }),
     });
   }
   function deleteArray(id: string) {
-    patch({ arrays: layout.arrays.filter((a) => a.id !== id) });
+    const a = layout.arrays.find((x) => x.id === id);
+    if (!a) return;
+    // ②から既設区画を削除する場合は、既設＝全候補共通の実体が消えることを確認してから実行する
+    if (phase === "henkou" && a.keepCells !== undefined) {
+      if (
+        !confirm(
+          `この区画（${a.rows}行×${a.cols}列）は既設です。削除すると既設の図面（全候補共通）から消えます。\n` +
+            "この候補だけで外したい場合はキャンセルして「撤去」を使ってください。\n" +
+            "既設ごと削除しますか？（「戻す」で復元可）"
+        )
+      )
+        return;
+      patch({ arrays: layout.arrays.filter((x) => x.id !== id) });
+      if (selectedId === id) setSelectedId(null);
+      return;
+    }
+    if (!confirm(`この区画（${a.rows}行×${a.cols}列）を削除しますか？（「戻す」で復元可）`)) return;
+    patch({ arrays: layout.arrays.filter((x) => x.id !== id) });
     if (selectedId === id) setSelectedId(null);
   }
 
@@ -1370,11 +1858,30 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
     setSelectedFreeId(null);
   }
 
-  /** 配置した配列・単独パネル（＝画面上のグリッド線）を全消去。Undoで戻せる。 */
+  /** 配置した配列・単独パネル（＝画面上のグリッド線）を全消去。Undoで戻せる。
+   *  ②では既設（流用マーク定義済み）の区画は守り、新設の配列・単独パネルだけを消す。 */
   function clearAllArrays() {
     if (layout.arrays.length === 0 && (layout.freePanels?.length ?? 0) === 0) return;
-    if (!confirm("配置したパネル配列をすべて消去します。よろしいですか？（「戻す」で復元可）")) return;
-    patch({ arrays: [], freePanels: [] });
+    if (phase === "henkou") {
+      const kept = layout.arrays.filter((a) => a.keepCells !== undefined);
+      const delCount = layout.arrays.length - kept.length + (layout.freePanels?.length ?? 0);
+      if (delCount === 0) {
+        alert("②で消去できるのは新設の配列・単独パネルだけです（既設の図面は「① 既設の設定」で）。");
+        return;
+      }
+      if (!confirm(`新設の配列・単独パネル（計${delCount}件）を消去します。既設はそのまま残ります。よろしいですか？（「戻す」で復元可）`)) return;
+      patch({ arrays: kept, freePanels: [] });
+    } else {
+      // ①では既設（マーク定義済み）だけを消す。②の新設配列・単独パネルは候補の検討内容なので残す
+      const keptNew = layout.arrays.filter((a) => a.keepCells === undefined);
+      const delCount = layout.arrays.length - keptNew.length;
+      if (delCount === 0) {
+        alert("消去できる既設の配列がありません。");
+        return;
+      }
+      if (!confirm(`既設の配列（${delCount}件）をすべて消去します。よろしいですか？（「戻す」で復元可）`)) return;
+      patch({ arrays: keptNew });
+    }
     setSelectedId(null);
     setSelectedFreeId(null);
   }
@@ -1401,6 +1908,8 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
     patch({ freePanels: [...(layout.freePanels ?? []), fp] });
     setSelectedFreeId(fp.id);
     setSelectedId(null);
+    // 挿入直後はドラッグで位置調整できるように編集モードを解除
+    setMode("pan");
   }
   function updateFree(id: string, p: Partial<FreePanel>, gesture?: string) {
     const upd = { freePanels: (layout.freePanels ?? []).map((f) => (f.id === id ? { ...f, ...p } : f)) };
@@ -1421,6 +1930,9 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
   const arrayCells = cellStats.reduce((s, x) => s + x.grid, 0);
   const totalPanels = arrayCells - removedTotal + freeCount;
   const keepTotal = cellStats.reduce((s, x) => s + x.keep, 0);
+  // ①既設の設定ビュー用：既設（マーク定義済み）の満数と、非表示にしている新設の数
+  const existingTotal = cellStats.reduce((s, x) => s + (x.marked ? x.grid : 0), 0);
+  const hiddenNewArrays = cellStats.filter((x) => !x.marked).length;
   const zones = layout.shadowZones ?? [];
   const shadedTotal = layout.arrays.reduce(
     (s, a) => s + shadedCellKeys(a, arrayPanelPx(a), zones).size,
@@ -1448,8 +1960,41 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
       !confirm("すでに基準が登録されています。今の構成で上書きしますか？")
     )
       return;
-    patch({ baseline: { ...sum, registeredAt: Date.now() } });
-    setManualMsg(`✓ 現状を基準として登録しました（${sum.totalPanels.toLocaleString()}枚・${sum.totalKw.toFixed(1)}kW）`);
+    // 数値と一緒に「既設図面の凍結コピー」も保存する＝本当の固定（壊れたら登録時点に戻せる）
+    patch({ baseline: { ...sum, registeredAt: Date.now(), arrays: snapshotExisting() } });
+    setManualMsg(`✓ 現状を基準として登録しました（${sum.totalPanels.toLocaleString()}枚・${sum.totalKw.toFixed(1)}kW・図面も凍結保存）`);
+  }
+
+  /** 作業コピーから既設（マーク定義済み）だけを、マーク無しの実体で取り出す。
+   *  欠け（形）とセルごとの型式（混在の塗り分け）は実体の一部なので含める。 */
+  function snapshotExisting(): PanelArray[] {
+    return layout.arrays
+      .filter((a) => a.keepCells !== undefined)
+      .map((a) => {
+        const body: PanelArray = JSON.parse(JSON.stringify(a));
+        delete body.keepCells;
+        delete body.removedCells;
+        return body;
+      });
+  }
+
+  /** 既設の図面を「基準登録した時点」に戻す。既設マスタごと書き換えるため全候補に反映される。 */
+  function restoreExistingFromBaseline() {
+    const snap = layout.baseline?.arrays;
+    if (!snap?.length) return;
+    if (
+      !confirm(
+        "既設の図面を「現状を基準登録」した時点に戻します。\n" +
+          "①の既設（形・欠け・配置・型式）が登録時点に戻り、全候補に反映されます。\n" +
+          "②の新設・撤去マークはそのまま残ります（この候補の流用指定は全部流用に戻ります）。\n" +
+          "よろしいですか？（「戻す」で取り消せます）"
+      )
+    )
+      return;
+    const snapCopy: PanelArray[] = JSON.parse(JSON.stringify(snap));
+    const restored = snapCopy.map((a) => ({ ...a, keepCells: allCellKeys(a.rows, a.cols) }));
+    const news = layout.arrays.filter((a) => a.keepCells === undefined);
+    patch({ arrays: [...restored, ...news], existingArrays: snapCopy });
   }
 
   function clearBaseline() {
@@ -1555,11 +2100,12 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
   function setAllPlant(keepAll: boolean) {
     patch({
       arrays: layout.arrays.map((a) => {
-        if (!keepAll) return { ...a, keepCells: [] };
-        const all: string[] = [];
-        for (let r = 0; r < a.rows; r++)
-          for (let c = 0; c < a.cols; c++) all.push(cellKey(r, c));
-        return { ...a, keepCells: all };
+        // 既設配列（マーク定義済み）のみ対象。②で追加した新設配列の区分は変えない
+        if (a.keepCells === undefined) return a;
+        // 全部を流用＝完全な取り消し（撤去マークも解除）。全部を入換は撤去マークを保持
+        return keepAll
+          ? { ...a, keepCells: allCellKeys(a.rows, a.cols), removedCells: undefined }
+          : { ...a, keepCells: [] };
       }),
     });
   }
@@ -1586,6 +2132,13 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
       {phase === "kisetsu" && (
       <div className="card">
         <h2>既設の設定（現況図面づくり）</h2>
+        {hasCandidates && (
+          <div className="hint" style={{ color: "#fbbf24", marginBottom: 8 }}>
+            ⚠ 検討候補{candidateCount ? `（${candidateCount}件）` : ""}があります。
+            ここで地図・写真・校正・向きを変更すると<strong>全ての候補が削除されます</strong>（変更前に確認が出ます）。
+            <br />候補ごとのパネル配置・撤去/入換は「② 変更の検討」で編集できます。
+          </div>
+        )}
 
         <h3>住所から地図を取得（地理院タイル）</h3>
         <div className="row" style={{ alignItems: "flex-end", flexWrap: "wrap" }}>
@@ -1646,6 +2199,7 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               <button
                 className={`btn small ${mode === "calibrate" ? "" : "secondary"}`}
                 onClick={() => {
+                  if (mode !== "calibrate" && !confirmSharedChange()) return;
                   setMode(mode === "calibrate" ? "pan" : "calibrate");
                   setCalibPts([]);
                 }}
@@ -1653,7 +2207,7 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
                 {mode === "calibrate" ? "基準線：2点をクリック中…" : "基準寸法を設定"}
               </button>
               {layout.calibration && (
-                <button className="btn secondary small" onClick={() => patch({ calibration: null })}>
+                <button className="btn secondary small" onClick={() => { if (confirmSharedChange()) patch({ calibration: null }); }}>
                   校正クリア
                 </button>
               )}
@@ -1679,7 +2233,9 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               {layout.calibration
                 ? `スケール: ${pixelsPerMeter.toFixed(1)} px/m`
                 : "未校正（基準寸法を設定してください）"}
-              ／ 合計 {totalPanels} 枚（流用 {keepTotal}{removedTotal ? ` / 撤去 ${removedTotal}` : ""}{freeCount ? ` / 追加 ${freeCount}` : ""}）
+              {phase === "kisetsu"
+                ? ` ／ 既設 合計 ${existingTotal} 枚${hiddenNewArrays || freeCount ? `（②の変更内容＝新設${hiddenNewArrays}配列・単独${freeCount}枚はここに表示しません）` : ""}`
+                : ` ／ 合計 ${totalPanels} 枚（流用 ${keepTotal}${removedTotal ? ` / 撤去 ${removedTotal}` : ""}${freeCount ? ` / 追加 ${freeCount}` : ""}）`}
             </span>
           </div>
         )}
@@ -1717,7 +2273,7 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
                   setMode(mode === "keeprect" && keepRectValue ? "pan" : "keeprect");
                 }}
               >
-                {mode === "keeprect" && keepRectValue ? "範囲流用中：ドラッグで囲む" : "▦ 範囲を流用（ドラッグ）"}
+                {mode === "keeprect" && keepRectValue ? "範囲を戻し中：ドラッグで囲む" : "▦ 範囲を戻す（流用へ・取り消し）"}
               </button>
               <button
                 className={`btn small ${mode === "keeprect" && !keepRectValue ? "" : "secondary"}`}
@@ -1735,8 +2291,8 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
                 全部を入換
               </button>
               <span className="hint">
-                <span style={{ color: KEEP_COLOR }}>■</span> 緑＝流用（変更しない）／ その他＝入換対象。<br />
-                <strong>範囲ドラッグ</strong>でまとめて指定（下段だけ入換など）、または個別クリックで1枚ずつ切替。
+                <span style={{ color: KEEP_COLOR }}>■</span> 緑＝流用（変更しない）。既設は<strong>最初から全て流用</strong>なので、<strong>変える所（入換・撤去）だけ指定</strong>すればOK。<br />
+                「▦ 範囲を戻す」は入換・撤去をまとめて流用に戻す取り消し用。指定はこの候補だけに保存されます（既設の図面そのものは全候補で共通）。
               </span>
             </div>
 
@@ -1876,8 +2432,285 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
             onMouseDown={onMouseDown}
             onMouseMove={onMouseMove}
             onMouseUp={onMouseUp}
-            onMouseLeave={onMouseUp}
+            onMouseLeave={() => {
+              // 範囲ドラッグ中は、画面上のボタン類（回転・戻す等）の上を通っても中断しない。
+              // ドラッグ継続はボタン押下の有無で onMouseMove 側が判定する
+              if (mode === "scan" || mode === "keeprect" || mode === "removerect" || mode === "missrect" || areaDragRef.current) return;
+              onMouseUp();
+            }}
+            onContextMenu={onContextMenu}
           />
+          {/* 右クリックメニュー：クリックしたパネルの編集をその場で行う */}
+          {ctxMenu && (() => {
+            const arr = layout.arrays.find((a) => a.id === ctxMenu.arrId);
+            if (!arr) return null;
+            const key = cellKey(ctxMenu.r, ctxMenu.col);
+            const isMissing = new Set(arr.missingCells ?? []).has(key);
+            const isExisting = arr.keepCells !== undefined;
+            const isKept = new Set(arr.keepCells ?? []).has(key);
+            const isRemoved = new Set(arr.removedCells ?? []).has(key);
+            const curPanelId = arr.cellPanels?.[key] ?? arr.panelId;
+            const close = () => setCtxMenu(null);
+            const cw = canvasRef.current?.clientWidth ?? 600;
+            const left = Math.max(4, Math.min(cw - 250, ctxMenu.x));
+            const top = Math.max(4, ctxMenu.y + 6);
+            return (
+              <div
+                style={{
+                  position: "absolute",
+                  left,
+                  top,
+                  width: 240,
+                  background: "rgba(15, 23, 42, 0.97)",
+                  border: "1px solid #334155",
+                  borderRadius: 8,
+                  padding: 8,
+                  zIndex: 8,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                }}
+              >
+                <div className="hint" style={{ marginTop: 0, display: "flex", alignItems: "center" }}>
+                  <span style={{ flex: 1 }}>
+                    {isExisting ? "既設" : "新設"}パネル（{ctxMenu.r + 1}行 {ctxMenu.col + 1}列）
+                  </span>
+                  <button className="cand-icon" title="閉じる" onClick={close}>✕</button>
+                </div>
+                <button
+                  className="btn small"
+                  title="ドラッグで囲んで、選んだエリアにまとめて操作（載せ替え・撤去など）"
+                  onClick={() => { setMode("areaselect"); close(); }}
+                >
+                  ▭ ここから範囲選択（ドラッグ）
+                </button>
+                {isMissing ? (
+                  phase === "kisetsu" ? (
+                    <button className="btn small" onClick={() => { toggleMissing(arr, ctxMenu.r, ctxMenu.col); close(); }}>
+                      ↩ パネルを戻す（欠けを復活）
+                    </button>
+                  ) : (
+                    <span className="hint" style={{ marginTop: 0 }}>パネル無し（形の編集は①で）</span>
+                  )
+                ) : (
+                  <>
+                    <div className="field" style={{ margin: 0 }}>
+                      <label>このパネルの型式</label>
+                      <select
+                        value={curPanelId}
+                        onChange={(e) => { setCellPanel(arr, ctxMenu.r, ctxMenu.col, e.target.value); close(); }}
+                      >
+                        {panels.map((p) => (
+                          <option key={p.id} value={p.id}>{p.maker} {p.model}（{p.pmaxW}W）</option>
+                        ))}
+                      </select>
+                    </div>
+                    {phase === "henkou" && isExisting && !isRemoved && (
+                      <button className="btn small secondary" onClick={() => { toggleCell(arr, ctxMenu.r, ctxMenu.col); close(); }}>
+                        {isKept ? "→ 入換にする（撤去して載せ替え）" : "↩ 流用に戻す（入換を取り消し）"}
+                      </button>
+                    )}
+                    {phase === "henkou" && (
+                      <button className="btn small secondary" onClick={() => { toggleRemove(arr, ctxMenu.r, ctxMenu.col); close(); }}>
+                        {isRemoved ? "↩ 撤去を戻す" : "🗑 撤去する（改修で外す）"}
+                      </button>
+                    )}
+                    {phase === "henkou" && (
+                      <>
+                        <div className="hint" style={{ marginTop: 2 }}>範囲でまとめて（押したらドラッグで囲む）：</div>
+                        <div style={{ display: "flex", gap: 4 }}>
+                          <button
+                            className="btn small secondary"
+                            style={{ flex: 1 }}
+                            title="囲んだ範囲を流用（変更しない）に戻す＝入換・撤去をまとめて取り消し"
+                            onClick={() => { setKeepRectValue(true); setMode("keeprect"); rectOnceRef.current = true; close(); }}
+                          >
+                            ▦ 戻す
+                          </button>
+                          <button
+                            className="btn small secondary"
+                            style={{ flex: 1 }}
+                            title="囲んだ範囲を入換（撤去して同じ場所に新パネル）にする"
+                            onClick={() => { setKeepRectValue(false); setMode("keeprect"); rectOnceRef.current = true; close(); }}
+                          >
+                            ▦ 入換
+                          </button>
+                          <button
+                            className="btn small secondary"
+                            style={{ flex: 1 }}
+                            title="囲んだ範囲を撤去（更地）にする"
+                            onClick={() => { setRemoveRectValue(true); setMode("removerect"); rectOnceRef.current = true; close(); }}
+                          >
+                            ▦ 撤去
+                          </button>
+                        </div>
+                      </>
+                    )}
+                    {phase === "kisetsu" && (
+                      <button className="btn small secondary" onClick={() => { toggleMissing(arr, ctxMenu.r, ctxMenu.col); close(); }}>
+                        ✂ パネル無しにする（最初から無い所）
+                      </button>
+                    )}
+                  </>
+                )}
+              </div>
+            );
+          })()}
+          {/* エリア選択のアクションパネル：選択範囲の近くに表示し、まとめて操作する */}
+          {selSets && !ctxMenu && (() => {
+            // 選択の集計と画面上の位置（セル中心ベース）
+            let count = 0;
+            const byType = new Map<string, number>();
+            let minX = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const arr of layout.arrays) {
+              const keys = selSets.get(arr.id);
+              if (!keys?.size) continue;
+              const { pw, ph, gapXpx, gapYpx } = arrayPanelPx(arr);
+              const rad = (arr.rotationDeg * Math.PI) / 180;
+              const cos = Math.cos(rad);
+              const sin = Math.sin(rad);
+              for (const k of keys) {
+                count++;
+                const pid = arr.cellPanels?.[k] ?? arr.panelId;
+                byType.set(pid, (byType.get(pid) ?? 0) + 1);
+                const i = k.indexOf(",");
+                const r = Number(k.slice(0, i));
+                const c = Number(k.slice(i + 1));
+                const lx = c * (pw + gapXpx) + pw / 2;
+                const ly = r * (ph + gapYpx) + ph / 2;
+                const s = imageToScreen(arr.posXpx + cos * lx - sin * ly, arr.posYpx + sin * lx + cos * ly);
+                if (s.x < minX) minX = s.x;
+                if (s.x > maxX) maxX = s.x;
+                if (s.y > maxY) maxY = s.y;
+              }
+            }
+            if (count === 0) return null;
+            const cw = canvasRef.current?.clientWidth ?? 600;
+            const chh = canvasRef.current?.clientHeight ?? 600;
+            const left = Math.max(4, Math.min(cw - 360, (minX + maxX) / 2 - 175));
+            const top = Math.max(4, Math.min(chh - 190, maxY + 14));
+            const typeLabel = [...byType.entries()]
+              .map(([pid, n]) => {
+                const p = panels.find((x) => x.id === pid);
+                return `${p ? `${p.pmaxW}W` : "未登録"}×${n}`;
+              })
+              .join("・");
+            return (
+              <div
+                style={{
+                  position: "absolute",
+                  left,
+                  top,
+                  width: 350,
+                  background: "rgba(15, 23, 42, 0.97)",
+                  border: "1px solid #fff",
+                  borderRadius: 8,
+                  padding: 8,
+                  zIndex: 8,
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 6,
+                }}
+              >
+                <div className="hint" style={{ marginTop: 0, display: "flex", alignItems: "center" }}>
+                  <strong style={{ flex: 1, color: "#fff" }}>選択中：{count}枚（{typeLabel}）</strong>
+                  <button className="cand-icon" title="選択を解除" onClick={() => setSelection(null)}>✕</button>
+                </div>
+                <PanelPicker panels={panels} value={selPanelId} onChange={setSelPanelId} allowEmpty />
+                <div style={{ display: "flex", gap: 4 }}>
+                  {phase === "henkou" && (
+                    <button
+                      className="btn small"
+                      style={{ flex: 1.4 }}
+                      disabled={!selPanelId}
+                      title="選択セルを入換にし、同じ位置に選んだ型式の新設配列を自動生成（位置合わせ不要）"
+                      onClick={() => selReplace(selPanelId)}
+                    >
+                      ⇄ この型式で載せ替え
+                    </button>
+                  )}
+                  <button
+                    className="btn small secondary"
+                    style={{ flex: 1 }}
+                    disabled={!selPanelId}
+                    title="既設の混在を修正（実体の型式を塗る・全候補共通）"
+                    onClick={() => selPaint(selPanelId)}
+                  >
+                    🎨 塗る
+                  </button>
+                </div>
+                <div style={{ display: "flex", gap: 4 }}>
+                  {phase === "henkou" ? (
+                    <>
+                      <button className="btn small secondary" style={{ flex: 1 }} title="選択を撤去（更地・載せ替えない）" onClick={selRemove}>
+                        🗑 撤去
+                      </button>
+                      <button className="btn small secondary" style={{ flex: 1 }} title="入換・撤去をまとめて流用に戻す（取り消し）" onClick={selRestore}>
+                        ↩ 流用に戻す
+                      </button>
+                    </>
+                  ) : (
+                    <button className="btn small secondary" style={{ flex: 1 }} title="選択セルを「最初から無い所」として削る（不定形づくり）" onClick={selCarve}>
+                      ✂ 削る（無い所）
+                    </button>
+                  )}
+                </div>
+              </div>
+            );
+          })()}
+          {/* 範囲モード中の案内バナー（いま何のドラッグ待ちかを常に表示） */}
+          {mode === "areaselect" && (
+            <div
+              className="hint"
+              style={{
+                position: "absolute",
+                top: 10,
+                left: "50%",
+                transform: "translateX(-50%)",
+                zIndex: 6,
+                background: "rgba(15, 23, 42, 0.92)",
+                border: "1px solid #fff",
+                borderRadius: 8,
+                padding: "4px 12px",
+                marginTop: 0,
+                whiteSpace: "nowrap",
+              }}
+            >
+              ▭ エリア選択：ドラッグで囲んでください（次回からは Shift＋ドラッグだけでもOK）
+            </div>
+          )}
+          {(mode === "keeprect" || mode === "removerect" || mode === "missrect") && (
+            <div
+              className="hint"
+              style={{
+                position: "absolute",
+                top: 10,
+                left: "50%",
+                transform: "translateX(-50%)",
+                zIndex: 6,
+                background: "rgba(15, 23, 42, 0.92)",
+                border: "1px solid #38bdf8",
+                borderRadius: 8,
+                padding: "4px 12px",
+                marginTop: 0,
+                whiteSpace: "nowrap",
+              }}
+            >
+              ▦{" "}
+              {mode === "keeprect"
+                ? keepRectValue
+                  ? "範囲を戻す（流用へ）"
+                  : "範囲を入換"
+                : mode === "removerect"
+                  ? removeRectValue
+                    ? "範囲を撤去"
+                    : "撤去を戻す"
+                  : missRectValue
+                    ? "範囲を削る"
+                    : "欠けを戻す"}
+              ：ドラッグで囲んでください
+            </div>
+          )}
           {/* 戻す・全消去（左上にオーバーレイ） */}
           <div
             style={{ position: "absolute", top: 10, left: 10, display: "flex", gap: 6 }}
@@ -1897,6 +2730,14 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               disabled={layout.arrays.length === 0 && (layout.freePanels?.length ?? 0) === 0}
             >
               🗑 全消去
+            </button>
+            <button
+              className={`btn small ${mode === "areaselect" ? "" : "secondary"}`}
+              title="ドラッグで囲んだエリアにまとめて操作（載せ替え・撤去・塗り・削り）。Shift＋ドラッグでも開始できます"
+              onClick={() => setMode(mode === "areaselect" ? "pan" : "areaselect")}
+              disabled={layout.arrays.length === 0}
+            >
+              ▭ エリア選択
             </button>
           </div>
           {/* 拡大縮小ボタン（右上にオーバーレイ） */}
@@ -1995,7 +2836,7 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
             </div>
           )}
           <div className="hint" style={{ padding: "6px 12px" }}>
-            ドラッグ＝移動／ホイール or ＋−ボタン＝ズーム／▣＝パネルに最大化／⤢＝写真全体／↩戻す・🗑全消去／配列をドラッグで位置調整
+            ドラッグ＝移動／ホイール or ＋−ボタン＝ズーム／▣＝パネルに最大化／⤢＝写真全体／↩戻す・🗑全消去／配列をドラッグで位置調整／<strong>パネルを右クリック＝1枚メニュー（型式変更・削る・撤去）</strong>
           </div>
 
           {/* 結線図（パワコン構成からストリングを自動割付）— 変更の検討フェーズのみ */}
@@ -2124,13 +2965,9 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
             <div className="empty">先に「パネル登録」でパネルを登録してください。</div>
           ) : (
             <div className="form-grid">
-              <div className="field">
-                <label>パネル</label>
-                <select value={formPanelId} onChange={(e) => setFormPanelId(e.target.value)}>
-                  {panels.map((p) => (
-                    <option key={p.id} value={p.id}>{p.maker} {p.model}</option>
-                  ))}
-                </select>
+              <div className="field" style={{ gridColumn: "1 / -1" }}>
+                <label>パネル（メーカー・出力で絞り込み）</label>
+                <PanelPicker panels={panels} value={formPanelId} onChange={setFormPanelId} allowEmpty />
               </div>
               <div className="field">
                 <label>向き</label>
@@ -2182,6 +3019,36 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
             </div>
           )}
 
+          {/* 不定形（L字・へこみ・端数行）：大きめの矩形を置いて「パネルの無い所」を削る。
+              形＝既設マスタの編集（全候補共通）なので①専用。②で外すのは「撤去」（候補ごと） */}
+          {phase === "kisetsu" && layout.arrays.length > 0 && (
+            <div className="row" style={{ marginTop: 6 }}>
+              <button
+                className={`btn small ${mode === "missing" ? "" : "secondary"}`}
+                onClick={() => setMode(mode === "missing" ? "pan" : "missing")}
+              >
+                {mode === "missing" ? "削り中：セルをクリックで削る/戻す" : "✂ 1枚ずつ削る/戻す（無い所）"}
+              </button>
+              <button
+                className={`btn small ${mode === "missrect" && missRectValue ? "" : "secondary"}`}
+                onClick={() => { setMissRectValue(true); setMode(mode === "missrect" && missRectValue ? "pan" : "missrect"); }}
+              >
+                {mode === "missrect" && missRectValue ? "範囲削り中：ドラッグで囲む" : "▦ 範囲を削る（ドラッグ）"}
+              </button>
+              <button
+                className={`btn small ${mode === "missrect" && !missRectValue ? "" : "secondary"}`}
+                onClick={() => { setMissRectValue(false); setMode(mode === "missrect" && !missRectValue ? "pan" : "missrect"); }}
+              >
+                {mode === "missrect" && !missRectValue ? "範囲戻し中：ドラッグで囲む" : "▦ 範囲を戻す（ドラッグ）"}
+              </button>
+              <span className="hint" style={{ flex: 1 }}>
+                <strong>不定形（L字・へこみ・端数行）用</strong>：大きめに配列を置き、パネルの<strong>無い所</strong>を削って形を合わせます。
+                削った分は枚数・kW・コスト・結線のすべてから除外（②の「撤去」＝改修で外す、とは別物）。
+                削り編集中は削った位置が赤破線で見え、戻すこともできます。
+              </span>
+            </div>
+          )}
+
           {/* 混在パネル：同サイズの別機種が1枚ずつ混ざる配列を、セルごとに型式変更（入替検討＝変更フェーズ） */}
           {phase === "henkou" && panels.length > 0 && (
             <div className="row" style={{ marginTop: 6, padding: "8px 10px", background: "#0b1220", borderRadius: 8, alignItems: "flex-end", flexWrap: "wrap" }}>
@@ -2191,11 +3058,9 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               >
                 {mode === "cellpanel" ? "混在編集中：セルをクリックで型式変更" : "▦ 混在パネル（セルごとに型式変更）"}
               </button>
-              <div className="field" style={{ minWidth: 220 }}>
-                <label>割り当てる型式</label>
-                <select value={cellPanelTarget} onChange={(e) => setCellPanelTarget(e.target.value)}>
-                  {panels.map((p) => (<option key={p.id} value={p.id}>{p.maker} {p.model}（{p.pmaxW}W）</option>))}
-                </select>
+              <div className="field" style={{ minWidth: 320 }}>
+                <label>割り当てる型式（メーカー・出力で絞り込み）</label>
+                <PanelPicker panels={panels} value={cellPanelTarget} onChange={setCellPanelTarget} />
               </div>
               <span className="hint" style={{ flex: 1 }}>
                 同サイズの別機種が混ざる配列で、<strong>セルをクリック</strong>して型式を切替（橙枠＋W値表示）。
@@ -2263,7 +3128,26 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               </thead>
               <tbody>
                 {layout.arrays.map((a, i) => {
-                  const p = panels.find((x) => x.id === a.panelId);
+                  // ①既設の設定では既設配列のみ表示（②の新設は変更の検討で編集）。番号は通し番号を維持
+                  if (phase === "kisetsu" && a.keepCells === undefined) return null;
+                  const s = arrayCellStats(a);
+                  const missingN = a.rows * a.cols - s.grid; // 欠け（最初から無い）枚数
+                  // 型式別の実数内訳（欠け除外・セルごとの型式上書きを考慮）
+                  const byType = (() => {
+                    const m = new Map<string, number>();
+                    const missing = new Set(a.missingCells ?? []);
+                    for (let r = 0; r < a.rows; r++)
+                      for (let c = 0; c < a.cols; c++) {
+                        const k = cellKey(r, c);
+                        if (missing.has(k)) continue;
+                        const pid = a.cellPanels?.[k] ?? a.panelId;
+                        m.set(pid, (m.get(pid) ?? 0) + 1);
+                      }
+                    return [...m.entries()].map(([pid, n]) => {
+                      const pp = panels.find((x) => x.id === pid);
+                      return { pid, label: pp ? `${pp.model}（${pp.pmaxW}W）` : "未登録パネル", n };
+                    });
+                  })();
                   return (
                     <tr
                       key={a.id}
@@ -2271,15 +3155,32 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
                       onClick={() => setSelectedId(a.id)}
                     >
                       <td>
-                        <span style={{ color: a.color }}>■</span> 配列{i + 1}
-                        <div className="hint">{p?.model ?? "—"}</div>
+                        <span style={{ color: arrayDispColor(a.color) }}>■</span> 配列{i + 1}
+                        {byType.map((t) => (
+                          <div className="hint" key={t.pid}>
+                            {t.label} × {t.n}枚
+                          </div>
+                        ))}
                       </td>
-                      <td className="num">{a.rows}×{a.cols}</td>
                       <td className="num">
-                        {a.rows * a.cols}
-                        {arrayCellStats(a).hasKeep && (
-                          <span className="hint"> (流用{arrayCellStats(a).keep})</span>
+                        {a.rows}×{a.cols}
+                        {missingN > 0 && (
+                          <div className="hint" style={{ color: "#f59e0b" }}>変則（欠け{missingN}）</div>
                         )}
+                      </td>
+                      <td className="num">
+                        {s.grid}
+                        {(() => {
+                          // 区分の見える化：流用マーク定義済み＝既設／無し＝新設（概算コスト・削除ガードと同じ判定）
+                          if (s.marked) {
+                            return (
+                              <span className="hint" style={{ color: KEEP_COLOR }}>
+                                {" "}既設{phase === "henkou" ? `（流用${s.keep}）` : ""}
+                              </span>
+                            );
+                          }
+                          return <span className="hint" style={{ color: "#38bdf8" }}> 新設</span>;
+                        })()}
                       </td>
                       <td>{a.orientation === "portrait" ? "縦" : "横"}</td>
                       <td className="num">
@@ -2305,12 +3206,12 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               <h3>選択中の配列を調整</h3>
               <div className="form-grid">
                 <div className="field" style={{ gridColumn: "1 / -1" }}>
-                  <label>パネル（型式の変更）</label>
-                  <select value={selected.panelId} onChange={(e) => updateArray(selected.id, { panelId: e.target.value })}>
-                    {panels.map((p) => (
-                      <option key={p.id} value={p.id}>{p.maker} {p.model}</option>
-                    ))}
-                  </select>
+                  <label>パネル（型式の変更・メーカー・出力で絞り込み）</label>
+                  <PanelPicker
+                    panels={panels}
+                    value={selected.panelId}
+                    onChange={(id) => updateArray(selected.id, { panelId: id })}
+                  />
                 </div>
                 <div className="field">
                   <label>行数</label>
@@ -2347,17 +3248,56 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               </div>
               {phase === "henkou" && (
                 <div className="row" style={{ marginTop: 8 }}>
-                  <span className="hint">この配列の流用指定：</span>
-                  <button className="btn secondary small" onClick={() => setAllCells(selected.id, true)}>全部流用</button>
-                  <button className="btn secondary small" onClick={() => setAllCells(selected.id, false)}>全部入換</button>
-                  <button className="btn secondary small" onClick={() => invertCells(selected.id)}>反転</button>
-                  <span className="hint">流用 {arrayCellStats(selected).keep} 枚</span>
+                  <span className="hint">この配列の撤去：</span>
+                  <button className="btn secondary small" title="全パネルを撤去（更地・載せ替えない）にする" onClick={() => setAllRemoved(selected.id, true)}>全部撤去</button>
+                  <button className="btn secondary small" title="この配列の撤去指定をすべて解除する" onClick={() => setAllRemoved(selected.id, false)}>撤去解除</button>
+                  <span className="hint">撤去 {arrayCellStats(selected).removed} 枚／流用 {arrayCellStats(selected).keep} 枚</span>
                 </div>
               )}
             </div>
           )}
         </div>
       )}
+
+      {/* ①既設の設定：既設パネルの内訳（型式別の枚数・kW を図面から自動集計） */}
+      {phase === "kisetsu" && (() => {
+        const sum = summarizeLayout(layout, panels, "genkyo");
+        if (sum.totalPanels === 0) return null;
+        return (
+          <div className="card">
+            <h2>既設パネルの内訳</h2>
+            <table className="list">
+              <thead>
+                <tr>
+                  <th>パネル型式</th>
+                  <th className="num">枚数</th>
+                  <th className="num">出力(kW)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sum.byPanel.map((b) => (
+                  <tr key={b.model}>
+                    <td>{b.model}</td>
+                    <td className="num">{b.count.toLocaleString()}</td>
+                    <td className="num">{b.kw.toFixed(1)}</td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot>
+                <tr>
+                  <td><strong>合計</strong></td>
+                  <td className="num"><strong>{sum.totalPanels.toLocaleString()} 枚</strong></td>
+                  <td className="num"><strong>{sum.totalKw.toFixed(1)} kW</strong></td>
+                </tr>
+              </tfoot>
+            </table>
+            <div className="hint" style={{ marginTop: 4 }}>
+              ①の図面（既設のみ）から自動集計しています。図面を直すとここも変わります。
+              「現状を基準登録」した数字（前後比較の改修前）は登録時点で固定され、こことは独立です。
+            </div>
+          </div>
+        );
+      })()}
 
       {(layout.imageDataUrl || layout.baseline || manualCurrent.length > 0 || layout.arrays.length > 0) && (
         <div className="card">
@@ -2367,8 +3307,13 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               <button className="btn" onClick={registerBaseline}>現状を基準登録（改修前を保存）</button>
             ) : (
               <>
-                <span className="badge new">✓ 現状（基準）登録済み・固定</span>
+                <span className="badge new">✓ 現状（基準）登録済み・固定{layout.baseline.arrays?.length ? "（図面も凍結）" : ""}</span>
                 <button className="btn secondary small" onClick={registerBaseline}>取り直す（今の内容で上書き）</button>
+                {!!layout.baseline.arrays?.length && (
+                  <button className="btn secondary small" onClick={restoreExistingFromBaseline} title="既設の図面（形・配置）を登録した時点に戻す">
+                    ⏪ 図面を登録時点に戻す（既設）
+                  </button>
+                )}
                 <button className="btn danger small" onClick={clearBaseline}>削除</button>
               </>
             )}
@@ -2381,9 +3326,13 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
             )}
           </div>
           <div className="hint" style={{ marginTop: 4 }}>
-            <strong>現状（基準）＝改修前</strong>：登録した時点で固定（図面を編集しても変わりません）。
+            <strong>現状（基準）＝改修前</strong>：登録した時点で<strong>数値も既設の図面も固定保存</strong>されます。
+            図面を壊してしまっても「⏪ 図面を登録時点に戻す」で復元できます。
             <strong>改修案＝改修後</strong>：図面の編集に合わせて<strong>自動更新</strong>（登録操作は不要）。
-            「取り直す」を押すと現状が今の内容で上書きされます。
+            「取り直す」を押すと現状（数値・図面とも）が今の内容で上書きされます。
+            {layout.baseline && !layout.baseline.arrays?.length && (
+              <strong>（旧形式の基準のため図面が未保存です。既設を直したら「取り直す」を1回押すと図面も凍結されます）</strong>
+            )}
           </div>
 
           {phase === "henkou" && (() => {
