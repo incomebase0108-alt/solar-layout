@@ -189,6 +189,8 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   const [selection, setSelection] = useState<Record<string, string[]> | null>(null);
   // アクションパネルで選ぶ型式（載せ替え・塗り用）
   const [selPanelId, setSelPanelId] = useState("");
+  // パネルにマウスを乗せたとき、メーカー名・型式を表示するツールチップ（同じ360Wでもジンコ/トリナ等を判別）
+  const [hoverInfo, setHoverInfo] = useState<{ x: number; y: number; label: string } | null>(null);
   // 操作結果メッセージ（撤去・載せ替え等の後にキャンバス上へ一時表示）
   const [opMsg, setOpMsg] = useState<string | null>(null);
   const opMsgTimer = useRef<number | undefined>(undefined);
@@ -1163,7 +1165,20 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
     }
 
     const d = dragRef.current;
-    if (!d) return;
+    if (!d) {
+      // ドラッグしていないとき：パネルの上ならメーカー名・型式をツールチップ表示
+      const img = screenToImage(sx, sy);
+      const cell = hitCell(img.x, img.y);
+      if (cell && !new Set(cell.arr.missingCells ?? []).has(cellKey(cell.r, cell.col))) {
+        const pid = cell.arr.cellPanels?.[cellKey(cell.r, cell.col)] ?? cell.arr.panelId;
+        const p = panels.find((x) => x.id === pid);
+        setHoverInfo(p ? { x: sx, y: sy, label: `${p.maker} ${p.model}（${p.pmaxW}W）` } : null);
+      } else if (hoverInfo) {
+        setHoverInfo(null);
+      }
+      return;
+    }
+    if (hoverInfo) setHoverInfo(null); // ドラッグ開始でツールチップを消す
     const dsx = sx - d.startSx;
     const dsy = sy - d.startSy;
 
@@ -2477,6 +2492,7 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
             onMouseMove={onMouseMove}
             onMouseUp={onMouseUp}
             onMouseLeave={() => {
+              setHoverInfo(null);
               // 範囲ドラッグ中は、画面上のボタン類（回転・戻す等）の上を通っても中断しない。
               // ドラッグ継続はボタン押下の有無で onMouseMove 側が判定する
               if (mode === "scan" || mode === "keeprect" || mode === "removerect" || mode === "missrect" || areaDragRef.current) return;
@@ -2718,6 +2734,27 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               </div>
             );
           })()}
+          {/* パネルのメーカー名・型式ツールチップ（マウス追従） */}
+          {hoverInfo && (
+            <div
+              style={{
+                position: "absolute",
+                left: Math.min(hoverInfo.x + 14, (canvasRef.current?.clientWidth ?? 600) - 220),
+                top: Math.max(4, hoverInfo.y - 34),
+                zIndex: 10,
+                pointerEvents: "none",
+                background: "rgba(15, 23, 42, 0.95)",
+                color: "#e2e8f0",
+                border: "1px solid #475569",
+                borderRadius: 6,
+                padding: "3px 8px",
+                fontSize: 12,
+                whiteSpace: "nowrap",
+              }}
+            >
+              {hoverInfo.label}
+            </div>
+          )}
           {/* 操作結果トースト（撤去・載せ替え等の結果を一時表示） */}
           {opMsg && (
             <div
