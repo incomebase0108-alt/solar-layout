@@ -363,7 +363,11 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
           <div className="field">
             <label>変更後の年間発電量 (kWh/年)</label>
             <input type="number" placeholder={`自動推定: ${Math.round(estAfterKwh).toLocaleString()}`} value={afterGenOverride} onChange={(e) => setAfterGenOverride(e.target.value === "" ? "" : Number(e.target.value))} />
-            <div className="hint">空欄なら容量比（{derived.beforeKw.toFixed(1)}→{afterKw.toFixed(1)}kW）で自動推定</div>
+            <div className="hint">
+              {derived.beforeKw > 0
+                ? `空欄なら容量比（${derived.beforeKw.toFixed(1)}→${afterKw.toFixed(1)}kW）で自動推定`
+                : `純新設は現況比が取れないため、空欄時は ${afterKw.toFixed(1)}kW × 約1,200kWh/kW で概算。実際の想定発電量があれば入力してください。`}
+            </div>
           </div>
         </div>
         <div className="result-grid" style={{ marginTop: 12 }}>

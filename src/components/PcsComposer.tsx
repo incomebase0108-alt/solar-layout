@@ -151,11 +151,20 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
     setUnits(units.map((u) => (u.id === id ? { ...u, ...patch } : u)));
   }
   function changeUnitPcs(id: string, pcsId: string) {
+    // 機種だけ差し替え、入力済みストリング行は保持する（切り詰めるとデータが不可逆に消える）。
+    // ストリング行がまだ無いユニットだけ、新機種のMPPT回路数に合わせて初期行を用意する。
+    // MPPT回路数を超える行は下の警告＋「MPPT数に合わせる」ボタンで手動調整できる。
     const newPcs = pcsList.find((p) => p.id === pcsId);
     setUnits(
-      units.map((u) =>
-        u.id === id ? { ...u, pcsId, strings: syncStringsToMppt(u.strings ?? [], newPcs?.mpptCount ?? 1) } : u
-      )
+      units.map((u) => {
+        if (u.id !== id) return u;
+        const hasStrings = (u.strings?.length ?? 0) > 0;
+        return {
+          ...u,
+          pcsId,
+          strings: hasStrings ? u.strings : syncStringsToMppt([], newPcs?.mpptCount ?? 1),
+        };
+      })
     );
   }
   function resyncStrings(id: string) {

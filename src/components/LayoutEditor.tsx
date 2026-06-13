@@ -412,11 +412,14 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   );
 
   // --- 描画 ---
-  const draw = useCallback(() => {
+  const draw = useCallback((wiringOverride?: WiringAssignResult | null) => {
     const c = canvasRef.current;
     if (!c) return;
     const ctx = c.getContext("2d");
     if (!ctx) return;
+    // 通常は state 由来の wiring を描く。PDF出力など、特定の結線状態を
+    // React の再描画を待たずに同期で描きたいときは引数で渡す。
+    const wv = wiringOverride !== undefined ? wiringOverride : wiring;
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, c.width, c.height);
@@ -492,10 +495,10 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
             continue;
           }
           // --- 結線表示モード：パワコン別に色分け＋「PC番号-ストリング番号」 ---
-          if (wiring) {
+          if (wv) {
             const ckey = `${arr.id}:${r},${col}`;
             // 改修案の対象外（入換で撤去・置換される既存セル）は薄い破線枠のみ
-            if (!wiring.targetCells.has(ckey)) {
+            if (!wv.targetCells.has(ckey)) {
               ctx.strokeStyle = "#334155";
               ctx.lineWidth = 1 / view.zoom;
               ctx.setLineDash([3 / view.zoom, 3 / view.zoom]);
@@ -503,7 +506,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
               ctx.setLineDash([]);
               continue;
             }
-            const as = wiring.byCell.get(ckey);
+            const as = wv.byCell.get(ckey);
             if (as) {
               ctx.fillStyle = as.color + "cc";
               ctx.strokeStyle = "#0b1220";
@@ -1553,7 +1556,17 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
     }
     try {
       const url = await fileToScaledDataUrl(file);
-      patch({ imageDataUrl: url, calibration: null, arrays: [] });
+      // 新しい台紙に差し替えるので、既存の配置・単独パネル・影ゾーン・回転/不透明度もリセット
+      // （loadFromAddress と同じクリア内容に揃える）。
+      patch({
+        imageDataUrl: url,
+        calibration: null,
+        arrays: [],
+        freePanels: [],
+        shadowZones: [],
+        imageRotationDeg: 0,
+        imageOpacity: 1,
+      });
     } catch {
       alert("画像の読み込みに失敗しました");
     }
@@ -1697,17 +1710,15 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     }
     const esc = (s: string) =>
       s.replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]!));
-    const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
-    const origWire = wireMode;
-    // 現在の図面（結線オフ）
-    setWireMode(false);
-    await sleep(220);
+    // 結線オフ／オンの両方を、React の再描画を待たずにキャンバスへ同期で描いて取り込む。
+    // （以前は setWireMode → 固定 sleep に頼っていたため、描画が間に合わず古い状態を
+    //   toDataURL してしまうレースがあった。draw に結線状態を直接渡して確実に描く。）
+    draw(null); // 現在の図面（結線なし）
     const imgLayout = c.toDataURL("image/jpeg", 0.9);
-    // 完成後＝結線図（結線オン）
-    setWireMode(true);
-    await sleep(300);
+    const wiringOn = assignWiring(layout, panels, pcsUnits ?? [], layout.wiringOverrides);
+    draw(wiringOn); // 完成後＝結線図
     const imgWiring = c.toDataURL("image/jpeg", 0.9);
-    setWireMode(origWire);
+    draw(); // 画面表示を現在の state に戻す
 
     // 集計
     const base = layout.baseline;

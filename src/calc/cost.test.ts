@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { estimateCost, estimateRoi, estimateAfterGeneration } from "./cost";
+import { estimateCost, estimateRoi, estimateAfterGeneration, DEFAULT_SPECIFIC_YIELD_KWH_PER_KW } from "./cost";
 import type { CostRates } from "../types";
 
 const rates: CostRates = {
@@ -75,8 +75,34 @@ describe("変更後発電量の推定", () => {
     // 40kW→45kWで1万kWhが11250kWh
     expect(estimateAfterGeneration(10000, 40, 45)).toBeCloseTo(11250, 1);
   });
-  it("前容量0なら0", () => {
-    expect(estimateAfterGeneration(10000, 0, 45)).toBe(0);
+  it("前容量0（純新設）は容量比が使えないため標準日射量で概算する", () => {
+    // 既設なし＝現況比が取れない。後容量50kW × 標準1000kWh/kW = 50000kWh
+    expect(estimateAfterGeneration(0, 0, 50)).toBeCloseTo(50 * DEFAULT_SPECIFIC_YIELD_KWH_PER_KW, 1);
+  });
+  it("後容量も0なら0", () => {
+    expect(estimateAfterGeneration(0, 0, 0)).toBe(0);
+  });
+  it("標準日射量は引数で上書きできる", () => {
+    expect(estimateAfterGeneration(0, 0, 50, 1200)).toBeCloseTo(60000, 1);
+  });
+});
+
+describe("純新設の費用対効果", () => {
+  it("既設ゼロでも発電量を概算しROIがマイナスにならない", () => {
+    const afterKw = 50;
+    const afterAnnualKwh = estimateAfterGeneration(0, 0, afterKw); // 50kW×1,200=60000kWh
+    const r = estimateRoi({
+      currentAnnualKwh: 0,
+      afterAnnualKwh,
+      fitPriceYenPerKwh: 18,
+      remainingYears: 10,
+      upgradeCostYen: 5_000_000,
+    });
+    // 増分=60000kWh × 18円 × 10年 = 10,800,000円 ＞ 改修費500万 → 正味プラス
+    expect(r.deltaAnnualKwh).toBeCloseTo(60000, 1);
+    expect(r.netBenefitYen).toBeGreaterThan(0);
+    expect(r.roiPct).not.toBeNull();
+    expect(r.roiPct!).toBeGreaterThan(0);
   });
 });
 

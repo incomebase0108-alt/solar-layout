@@ -132,13 +132,24 @@ export function estimateCost(input: CostInput): CostResult {
 // 費用対効果（ROI）
 // ============================================================
 
-/** 容量比で変更後の年間発電量を推定する（現状発電量 × 後容量/前容量）。 */
+/**
+ * 標準的な年間発電量（1kWあたり）。純新設で現況比が取れないときの概算に使う。
+ * 日本の低圧～高圧太陽光のおおよその実績（地域・傾斜で変動）。実値があれば上書き推奨。
+ */
+export const DEFAULT_SPECIFIC_YIELD_KWH_PER_KW = 1200;
+
+/**
+ * 変更後の年間発電量を推定する。
+ *   既設あり（beforeKw>0）：現況発電量 × 後容量/前容量（容量比でスケール）。
+ *   純新設（beforeKw<=0）：現況比が取れないので 後容量 × 標準日射量 で概算。
+ */
 export function estimateAfterGeneration(
   currentAnnualKwh: number,
   beforeKw: number,
-  afterKw: number
+  afterKw: number,
+  specificYieldKwhPerKw: number = DEFAULT_SPECIFIC_YIELD_KWH_PER_KW
 ): number {
-  if (beforeKw <= 0) return 0;
+  if (beforeKw <= 0) return Math.max(0, afterKw) * specificYieldKwhPerKw;
   return (currentAnnualKwh * afterKw) / beforeKw;
 }
 
