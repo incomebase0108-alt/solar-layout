@@ -189,6 +189,15 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
   const [selection, setSelection] = useState<Record<string, string[]> | null>(null);
   // アクションパネルで選ぶ型式（載せ替え・塗り用）
   const [selPanelId, setSelPanelId] = useState("");
+  // 操作結果メッセージ（撤去・載せ替え等の後にキャンバス上へ一時表示）
+  const [opMsg, setOpMsg] = useState<string | null>(null);
+  const opMsgTimer = useRef<number | undefined>(undefined);
+  /** 操作結果を画面に出す（数秒で自動的に消える）。 */
+  function flashMsg(text: string) {
+    setOpMsg(text);
+    if (opMsgTimer.current !== undefined) clearTimeout(opMsgTimer.current);
+    opMsgTimer.current = window.setTimeout(() => setOpMsg(null), 3500);
+  }
   // Shift＋ドラッグ（どのモードからでも選択開始）中かどうか
   const areaDragRef = useRef(false);
   // 高速参照用（draw・操作で使う）
@@ -456,13 +465,28 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
             }
             continue;
           }
-          // 撤去セルは空き枠（破線）で表示し、カウントしない（②のみ。①は既設満数で表示）
+          // 撤去セルは赤系の塗り＋×印で「撤去」と一目で分かるようにする（②のみ。①は既設満数で表示）
           if (phase === "henkou" && removed.has(cellKey(r, col))) {
-            ctx.strokeStyle = "#64748b";
-            ctx.lineWidth = 1 / view.zoom;
-            ctx.setLineDash([4 / view.zoom, 3 / view.zoom]);
+            ctx.fillStyle = "rgba(244,63,94,0.30)"; // 赤の半透明
+            ctx.fillRect(x, y, pw, ph);
+            ctx.strokeStyle = "#f43f5e";
+            ctx.lineWidth = 1.2 / view.zoom;
             ctx.strokeRect(x, y, pw, ph);
-            ctx.setLineDash([]);
+            // ×印（ズームが十分なときのみ）
+            if (Math.min(pw, ph) * view.zoom >= 8) {
+              ctx.beginPath();
+              ctx.moveTo(x + pw * 0.2, y + ph * 0.2);
+              ctx.lineTo(x + pw * 0.8, y + ph * 0.8);
+              ctx.moveTo(x + pw * 0.8, y + ph * 0.2);
+              ctx.lineTo(x + pw * 0.2, y + ph * 0.8);
+              ctx.stroke();
+            }
+            // 選択中なら白枠を重ねて「選択は維持されている」ことを示す
+            if (areaSel?.has(cellKey(r, col))) {
+              ctx.strokeStyle = "#fff";
+              ctx.lineWidth = 2 / view.zoom;
+              ctx.strokeRect(x, y, pw, ph);
+            }
             continue;
           }
           // --- 結線表示モード：パワコン別に色分け＋「PC番号-ストリング番号」 ---
@@ -798,17 +822,28 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
     });
   }
 
+  /** 選択セルの合計枚数を数える（欠け除外）。 */
+  function selCount(): number {
+    if (!selSets) return 0;
+    let n = 0;
+    for (const [, keys] of selSets) n += keys.size;
+    return n;
+  }
+
   /** 選択を撤去（更地）にする（②）。 */
   function selRemove() {
+    const n = selCount();
     applyToSelection((a, keys) => {
       const removed = new Set(a.removedCells ?? []);
       keys.forEach((k) => removed.add(k));
       return { ...a, removedCells: [...removed] };
     });
+    flashMsg(`🗑 ${n}枚を撤去しました（更地・改修後から除外）`);
   }
 
   /** 選択を流用に戻す＝入換・撤去をまとめて取り消し（②・既設のみ）。 */
   function selRestore() {
+    const n = selCount();
     applyToSelection((a, keys) => {
       if (a.keepCells === undefined) return a;
       const keep = new Set(a.keepCells);
@@ -819,11 +854,14 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       });
       return { ...a, keepCells: [...keep], removedCells: a.removedCells ? [...removed] : undefined };
     });
+    flashMsg(`↩ ${n}枚を流用（変更しない）に戻しました`);
   }
 
   /** 選択セルの型式を塗る（既設実体の混在修正。マスタ＝全候補共通）。 */
   function selPaint(pid: string) {
     if (!pid) return;
+    const n = selCount();
+    const p = panels.find((x) => x.id === pid);
     applyToSelection((a, keys) => {
       const cp = { ...(a.cellPanels ?? {}) };
       keys.forEach((k) => {
@@ -832,10 +870,12 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       });
       return { ...a, cellPanels: cp };
     });
+    flashMsg(`🎨 ${n}枚を ${p ? `${p.model}（${p.pmaxW}W）` : "選択型式"} に変更しました`);
   }
 
   /** 選択を削る（欠け＝最初から無い所、①）。 */
   function selCarve() {
+    const n = selCount();
     applyToSelection((a, keys) => {
       const missing = new Set(a.missingCells ?? []);
       const keep = a.keepCells ? new Set(a.keepCells) : null;
@@ -853,6 +893,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
       };
     });
     setSelection(null); // 削ったセルは存在しなくなるので選択も解除
+    flashMsg(`✂ ${n}枚を「パネル無し」にしました（枚数・コストから除外）`);
   }
 
   /**
@@ -862,6 +903,8 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
    */
   function selReplace(pid: string) {
     if (!pid || !selSets) return;
+    const n = selCount();
+    const p = panels.find((x) => x.id === pid);
     const newArrays: PanelArray[] = [];
     const updated = layout.arrays.map((a) => {
       const keys = selSets.get(a.id);
@@ -909,6 +952,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, defaultAddress, 
     });
     patch({ arrays: [...updated, ...newArrays] });
     setSelection(null);
+    flashMsg(`⇄ ${n}枚を ${p ? `${p.model}（${p.pmaxW}W）` : "選択型式"} に載せ替えました（撤去${n}＋新設${n}）`);
   }
 
   /** 配列単位の撤去指定。removeAll=true で全パネルを撤去（更地・載せ替えなし）、false で撤去を全解除。
@@ -2558,8 +2602,9 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
           })()}
           {/* エリア選択のアクションパネル：選択範囲の近くに表示し、まとめて操作する */}
           {selSets && !ctxMenu && (() => {
-            // 選択の集計と画面上の位置（セル中心ベース）
+            // 選択の集計と画面上の位置（セル中心ベース）。状態（流用/入換/撤去）も数える
             let count = 0;
+            let keptN = 0, removedN = 0, swapN = 0;
             const byType = new Map<string, number>();
             let minX = Infinity, maxX = -Infinity, maxY = -Infinity;
             for (const arr of layout.arrays) {
@@ -2569,10 +2614,15 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               const rad = (arr.rotationDeg * Math.PI) / 180;
               const cos = Math.cos(rad);
               const sin = Math.sin(rad);
+              const keepSet = arr.keepCells ? new Set(arr.keepCells) : null;
+              const remSet = new Set(arr.removedCells ?? []);
               for (const k of keys) {
                 count++;
                 const pid = arr.cellPanels?.[k] ?? arr.panelId;
                 byType.set(pid, (byType.get(pid) ?? 0) + 1);
+                if (remSet.has(k)) removedN++;
+                else if (keepSet && !keepSet.has(k)) swapN++; // 既設でkeep無し＝入換
+                else keptN++;
                 const i = k.indexOf(",");
                 const r = Number(k.slice(0, i));
                 const c = Number(k.slice(i + 1));
@@ -2585,6 +2635,11 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               }
             }
             if (count === 0) return null;
+            const stateLabel = [
+              keptN ? `流用${keptN}` : "",
+              swapN ? `入換${swapN}` : "",
+              removedN ? `撤去${removedN}` : "",
+            ].filter(Boolean).join("・");
             const cw = canvasRef.current?.clientWidth ?? 600;
             const chh = canvasRef.current?.clientHeight ?? 600;
             const left = Math.max(4, Math.min(cw - 360, (minX + maxX) / 2 - 175));
@@ -2616,6 +2671,11 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
                   <strong style={{ flex: 1, color: "#fff" }}>選択中：{count}枚（{typeLabel}）</strong>
                   <button className="cand-icon" title="選択を解除" onClick={() => setSelection(null)}>✕</button>
                 </div>
+                {phase === "henkou" && stateLabel && (
+                  <div className="hint" style={{ marginTop: 0, color: removedN || swapN ? "#fbbf24" : "#94a3b8" }}>
+                    現在の状態：{stateLabel}
+                  </div>
+                )}
                 <PanelPicker panels={panels} value={selPanelId} onChange={setSelPanelId} allowEmpty />
                 <div style={{ display: "flex", gap: 4 }}>
                   {phase === "henkou" && (
@@ -2658,6 +2718,28 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               </div>
             );
           })()}
+          {/* 操作結果トースト（撤去・載せ替え等の結果を一時表示） */}
+          {opMsg && (
+            <div
+              style={{
+                position: "absolute",
+                top: 50,
+                left: "50%",
+                transform: "translateX(-50%)",
+                zIndex: 9,
+                background: "rgba(34,197,94,0.95)",
+                color: "#04210f",
+                fontWeight: "bold",
+                border: "1px solid #bbf7d0",
+                borderRadius: 8,
+                padding: "6px 16px",
+                whiteSpace: "nowrap",
+                boxShadow: "0 4px 12px rgba(0,0,0,0.4)",
+              }}
+            >
+              {opMsg}
+            </div>
+          )}
           {/* 範囲モード中の案内バナー（いま何のドラッグ待ちかを常に表示） */}
           {mode === "areaselect" && (
             <div
