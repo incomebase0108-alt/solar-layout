@@ -140,7 +140,7 @@ export function distribute(
       );
       const canNewMppt = u.slots.length < pcs.mpptCount;
       if (strategy === "dense") {
-        // 分岐(2並列)で束ねる → 次に別MPPT
+        // 分岐(stringsPerMpptまで並列)で束ねる → 次に別MPPT
         if (match) {
           match.parallel += 1;
           u.total += 1;

@@ -114,6 +114,21 @@ describe("distribute", () => {
     expect(r.leftoverCircuits).toHaveLength(0);
   });
 
+  it("spread：空きMPPTが尽きたら分岐にフォールバックする（同型3回路・1台・MPPT2）", () => {
+    const circuits = [
+      { panelId: "pa", series: 12 },
+      { panelId: "pa", series: 12 },
+      { panelId: "pa", series: 12 },
+    ];
+    const r = distribute(circuits, PCS_T, 1, 4, "spread");
+    expect(r.units).toHaveLength(1);
+    const slots = r.units[0].strings ?? [];
+    expect(slots).toHaveLength(2); // まず別MPPTに2行、3本目は分岐
+    const maxParallel = Math.max(...slots.map((s) => s.parallel));
+    expect(maxParallel).toBe(2); // 3本目が分岐2並列に
+    expect(r.leftoverCircuits).toHaveLength(0);
+  });
+
   it("非マルチMPPT機は1台＝単一型式・単一直列に限定", () => {
     const nonMulti: PcsSpec = { ...PCS_T, multiMppt: false, mpptCount: 1, stringsPerMppt: 4 };
     const circuits = [
