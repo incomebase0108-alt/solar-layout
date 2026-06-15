@@ -41,13 +41,15 @@ interface Circuit {
 
 /**
  * 残（配置できない端数）が最小になる直列数を選ぶ。
+ * 直列数はパネル枚数 total を超えられない（total本より長い直列は作れない）。
  * 端数 R は R>=min なら短い回路で吸収でき残0、R<min なら R 枚が残になる。
- * waste(s) を最小化し、同点は直列数の大きい方（回路数少）。
+ * waste(s) を最小化し、同点は直列数の大きい方（回路数少）を選ぶ。
  */
 export function pickSeries(total: number, min: number, max: number): number {
   let best = min;
   let bestWaste = Number.POSITIVE_INFINITY;
-  for (let s = max; s >= min; s--) {
+  const hi = Math.min(max, total); // 直列数は枚数を超えない
+  for (let s = hi; s >= min; s--) {
     const r = total % s;
     const waste = r < min ? r : 0;
     if (waste < bestWaste) {
