@@ -106,6 +106,31 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
   const remainPanels = layoutPanels - usedPanels;
   const errorUnits = computed.filter((g) => g.hasError);
 
+  // --- 型式別の在庫（図面枚数 vs パワコンへ割り振った使用枚数） ---
+  // 割り振り作業中に「どの型式があと何枚残っているか」を図面ページへ切り替えずに見るための集計。
+  const usedByModel = new Map<string, number>();
+  for (const g of computed) {
+    for (const st of g.strings) {
+      const model = st.panel ? `${st.panel.maker} ${st.panel.model}` : "未登録パネル";
+      usedByModel.set(model, (usedByModel.get(model) ?? 0) + st.cells);
+    }
+  }
+  const stockModels = new Set<string>([
+    ...layoutSummary.byPanel.map((b) => b.model),
+    ...usedByModel.keys(),
+  ]);
+  const stockRows = [...stockModels]
+    .map((model) => {
+      const fig = layoutSummary.byPanel.find((b) => b.model === model)?.count ?? 0;
+      const used = usedByModel.get(model) ?? 0;
+      return { model, fig, used, remain: fig - used };
+    })
+    .sort((a, b) => b.fig - a.fig);
+
+  // 現在表示している変更候補の名前（候補未使用なら「現在の内容」）。在庫がどの候補のものか明示する。
+  const activeCand = (plant.candidates ?? []).find((c) => c.id === plant.currentCandidateId);
+  const candLabel = activeCand ? activeCand.name : "現在の内容（候補未使用）";
+
   // --- 更新ヘルパ ---
   function setUnits(next: PcsUnitLine[]) {
     updatePlant(plant.id, { pcsUnits: next });
@@ -208,6 +233,58 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
 
   return (
     <>
+      {/* 型式別パネル在庫バー：スクロールしても上部に残り、割り振り中に常に枚数を確認できる */}
+      <div
+        className="no-print"
+        style={{
+          position: "sticky",
+          top: 0,
+          zIndex: 20,
+          background: "var(--panel)",
+          border: "1px solid var(--border)",
+          borderRadius: 10,
+          padding: "8px 12px",
+          marginBottom: 12,
+          boxShadow: "0 4px 12px rgba(0,0,0,0.30)",
+        }}
+      >
+        <div className="row" style={{ alignItems: "baseline", gap: 12 }}>
+          <strong style={{ fontSize: 13 }}>📋 型式別パネル在庫 — 図面「{candLabel}」</strong>
+          <span className="hint" style={{ marginTop: 0 }}>
+            合計：図面 {fmt(layoutPanels)} ／ 使用 {fmt(usedPanels)} ／
+            <strong style={{ color: remainPanels < 0 ? "var(--danger)" : "var(--accent)", marginLeft: 4 }}>
+              残 {fmt(remainPanels)} 枚
+            </strong>
+            {remainPanels < 0 && <span style={{ color: "var(--danger)" }}>（図面より多く割り振っています）</span>}
+          </span>
+        </div>
+        <div className="row" style={{ gap: 8, marginTop: 6, overflowX: "auto" }}>
+          {stockRows.length === 0 ? (
+            <span className="hint" style={{ marginTop: 0 }}>図面にパネルがありません（②図面で配置してください）。</span>
+          ) : (
+            stockRows.map((r) => {
+              const color = r.remain < 0 ? "var(--danger)" : r.remain === 0 ? "var(--muted)" : "var(--accent)";
+              return (
+                <span
+                  key={r.model}
+                  style={{
+                    border: "1px solid var(--border)",
+                    borderRadius: 999,
+                    padding: "3px 10px",
+                    fontSize: 12,
+                    whiteSpace: "nowrap",
+                    background: "var(--panel-2)",
+                  }}
+                >
+                  <strong>{r.model}</strong>：図面 {fmt(r.fig)} ／ 使用 {fmt(r.used)} ／
+                  <strong style={{ color, marginLeft: 3 }}>残 {fmt(r.remain)}</strong>
+                </span>
+              );
+            })
+          )}
+        </div>
+      </div>
+
       {/* サマリ */}
       <div className="card">
         <div className="row">
