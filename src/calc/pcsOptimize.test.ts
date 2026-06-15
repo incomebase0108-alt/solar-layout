@@ -54,12 +54,10 @@ const PCS_T: PcsSpec = {
 };
 
 describe("distribute", () => {
-  it("同一型式5回路を2台へ均等配分（分岐で並列化、合計≤C=3）", () => {
+  it("既定(spread)：同一型式5回路を2台へ均等配分（合計≤C=3・並列≤2）", () => {
     const circuits = Array.from({ length: 5 }, () => ({ panelId: "pa", series: 12 }));
     const r = distribute(circuits, PCS_T, 2, 3);
-    const counts = r.units.map((u) =>
-      (u.strings ?? []).reduce((a, s) => a + s.parallel, 0)
-    );
+    const counts = r.units.map((u) => (u.strings ?? []).reduce((a, s) => a + s.parallel, 0));
     expect(counts.sort()).toEqual([2, 3]);
     expect(r.leftoverCircuits).toHaveLength(0);
     for (const u of r.units)
@@ -74,13 +72,39 @@ describe("distribute", () => {
     expect(r.leftoverCircuits).toHaveLength(1);
   });
 
-  it("複数型式は1台のMPPTごとに別型式で同居できる", () => {
+  it("spread：同一型式2回路は別MPPTに散らし分岐しない（並列はすべて1）", () => {
+    const circuits = [
+      { panelId: "pa", series: 12 },
+      { panelId: "pa", series: 12 },
+    ];
+    const r = distribute(circuits, PCS_T, 1, 4, "spread");
+    expect(r.units).toHaveLength(1);
+    const slots = r.units[0].strings ?? [];
+    expect(slots).toHaveLength(2); // 別MPPTに2行
+    for (const s of slots) expect(s.parallel).toBe(1);
+    expect(r.leftoverCircuits).toHaveLength(0);
+  });
+
+  it("dense：同一型式2回路は分岐2並列で1MPPTに束ねる", () => {
+    const circuits = [
+      { panelId: "pa", series: 12 },
+      { panelId: "pa", series: 12 },
+    ];
+    const r = distribute(circuits, PCS_T, 1, 4, "dense");
+    expect(r.units).toHaveLength(1);
+    const slots = r.units[0].strings ?? [];
+    expect(slots).toHaveLength(1); // 1MPPTに束ねる
+    expect(slots[0].parallel).toBe(2);
+    expect(r.leftoverCircuits).toHaveLength(0);
+  });
+
+  it("dense：複数型式は分岐で空きMPPTを作り1台に同居できる", () => {
     const circuits = [
       { panelId: "pa", series: 12 },
       { panelId: "pa", series: 12 },
       { panelId: "pb", series: 11 },
     ];
-    const r = distribute(circuits, PCS_T, 1, 3);
+    const r = distribute(circuits, PCS_T, 1, 3, "dense");
     expect(r.units).toHaveLength(1);
     const slots = r.units[0].strings ?? [];
     const pa = slots.find((s) => s.panelId === "pa");
@@ -120,7 +144,7 @@ const PANEL_B: PanelSpec = {
 const COND: DesignConditions = { minAmbientTempC: -10, maxCellTempC: 70 };
 
 describe("optimizePcs", () => {
-  it("単一型式を使い切る（PANEL_A 24枚 / PCS_T 範囲[3,12]→直列12×2回路, 1台に収容）", () => {
+  it("単一型式を使い切る（PANEL_A 24枚 / 既定spread → 1台に24枚・残0）", () => {
     const r = optimizePcs({
       inventory: [{ panelId: "pa", count: 24 }],
       panels: [PANEL_A], pcs: PCS_T, conditions: COND,
@@ -133,11 +157,25 @@ describe("optimizePcs", () => {
     expect(r.ampWarnings).toHaveLength(0);
   });
 
-  it("複数型式が1台のMPPTごとに別型式で同居（PANEL_A24 + PANEL_B11）", () => {
+  it("spread：同一型式は分岐せず別MPPT（並列はすべて1・電流警報なし）", () => {
+    const r = optimizePcs({
+      inventory: [{ panelId: "pa", count: 24 }],
+      panels: [PANEL_A], pcs: PCS_T, conditions: COND,
+      unitCount: 1, maxCircuitsPerUnit: 3, strategy: "spread",
+    });
+    expect(r.units).toHaveLength(1);
+    const slots = r.units[0].strings ?? [];
+    expect(slots).toHaveLength(2);
+    for (const s of slots) expect(s.parallel).toBe(1);
+    expect(r.ampWarnings).toHaveLength(0);
+    expect(r.leftoverTotal).toBe(0);
+  });
+
+  it("dense：複数型式が1台のMPPTごとに別型式で同居（PANEL_A24 + PANEL_B11）", () => {
     const r = optimizePcs({
       inventory: [{ panelId: "pa", count: 24 }, { panelId: "pb", count: 11 }],
       panels: [PANEL_A, PANEL_B], pcs: PCS_T, conditions: COND,
-      unitCount: 1, maxCircuitsPerUnit: 3,
+      unitCount: 1, maxCircuitsPerUnit: 3, strategy: "dense",
     });
     expect(r.units).toHaveLength(1);
     const ids = new Set((r.units[0].strings ?? []).map((s) => s.panelId));
@@ -155,12 +193,12 @@ describe("optimizePcs", () => {
     expect(r.unitsNeededForAll).toBe(3);
   });
 
-  it("電流超過は容認して警報に出す（maxInputCurrent16・並列2で 2*10=20>16）", () => {
+  it("dense：電流超過は容認して警報に出す（maxInputCurrent16・分岐並列2で 2*10=20>16）", () => {
     const PCS_AMP: PcsSpec = { ...PCS_T, id: "pamp", maxInputCurrentPerMpptA: 16 };
     const r = optimizePcs({
       inventory: [{ panelId: "pa", count: 24 }],
       panels: [PANEL_A], pcs: PCS_AMP, conditions: COND,
-      unitCount: 1, maxCircuitsPerUnit: 3,
+      unitCount: 1, maxCircuitsPerUnit: 3, strategy: "dense",
     });
     expect(r.ampWarnings.length).toBeGreaterThan(0);
     expect(r.leftoverTotal).toBe(0);

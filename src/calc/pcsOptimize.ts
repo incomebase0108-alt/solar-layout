@@ -17,6 +17,8 @@ export interface OptimizeInput {
   unitCount: number;
   /** 1台あたり最大回路数（分岐含む・手入力） */
   maxCircuitsPerUnit: number;
+  /** 配分の優先（既定: spread=影に強い分散） */
+  strategy?: PackStrategy;
 }
 
 export interface OptimizeResult {
@@ -38,6 +40,9 @@ interface Circuit {
   panelId: string;
   series: number;
 }
+
+/** 配分の優先：spread=影に強い(MPPT分散)・dense=台数を詰める(分岐優先) */
+export type PackStrategy = "spread" | "dense";
 
 /**
  * 残（配置できない端数）が最小になる直列数を選ぶ。
@@ -94,7 +99,8 @@ export function distribute(
   circuits: Circuit[],
   pcs: PcsSpec,
   unitCount: number,
-  maxCircuitsPerUnit: number
+  maxCircuitsPerUnit: number,
+  strategy: PackStrategy = "spread"
 ): { units: PcsUnitLine[]; leftoverCircuits: Circuit[] } {
   const perUnitCap = Math.min(
     Math.max(1, maxCircuitsPerUnit),
@@ -114,9 +120,14 @@ export function distribute(
   const leftoverCircuits: Circuit[] = [];
 
   for (const c of sorted) {
+    // 台の選び方：spread=空いている台から(バランス)／dense=埋まっている台から(台数最小化)
     const order = units
       .map((u, i) => ({ u, i }))
-      .sort((x, y) => (x.u.total - y.u.total) || (x.i - y.i));
+      .sort((x, y) =>
+        strategy === "dense"
+          ? (y.u.total - x.u.total) || (x.i - y.i)
+          : (x.u.total - y.u.total) || (x.i - y.i)
+      );
     let placed = false;
     for (const { u } of order) {
       if (u.total >= perUnitCap) continue;
@@ -127,17 +138,35 @@ export function distribute(
       const match = u.slots.find(
         (s) => s.panelId === c.panelId && s.series === c.series && s.parallel < pcs.stringsPerMppt
       );
-      if (match) {
-        match.parallel += 1;
-        u.total += 1;
-        placed = true;
-        break;
-      }
-      if (u.slots.length < pcs.mpptCount) {
-        u.slots.push({ id: uid("str"), panelId: c.panelId, series: c.series, parallel: 1 });
-        u.total += 1;
-        placed = true;
-        break;
+      const canNewMppt = u.slots.length < pcs.mpptCount;
+      if (strategy === "dense") {
+        // 分岐(2並列)で束ねる → 次に別MPPT
+        if (match) {
+          match.parallel += 1;
+          u.total += 1;
+          placed = true;
+          break;
+        }
+        if (canNewMppt) {
+          u.slots.push({ id: uid("str"), panelId: c.panelId, series: c.series, parallel: 1 });
+          u.total += 1;
+          placed = true;
+          break;
+        }
+      } else {
+        // spread：別MPPTに1並列ずつ散らす → 空きMPPTが無い時だけ分岐にフォールバック
+        if (canNewMppt) {
+          u.slots.push({ id: uid("str"), panelId: c.panelId, series: c.series, parallel: 1 });
+          u.total += 1;
+          placed = true;
+          break;
+        }
+        if (match) {
+          match.parallel += 1;
+          u.total += 1;
+          placed = true;
+          break;
+        }
       }
     }
     if (!placed) leftoverCircuits.push(c);
@@ -153,6 +182,7 @@ export function distribute(
 /** 在庫・機種・条件から下書き構成を生成する。 */
 export function optimizePcs(input: OptimizeInput): OptimizeResult {
   const { inventory, panels, pcs, conditions, unitCount, maxCircuitsPerUnit } = input;
+  const strategy = input.strategy ?? "spread";
   const notes: string[] = [];
 
   const allCircuits: Circuit[] = [];
@@ -178,7 +208,7 @@ export function optimizePcs(input: OptimizeInput): OptimizeResult {
     }
   }
 
-  const { units, leftoverCircuits } = distribute(allCircuits, pcs, unitCount, maxCircuitsPerUnit);
+  const { units, leftoverCircuits } = distribute(allCircuits, pcs, unitCount, maxCircuitsPerUnit, strategy);
 
   for (const c of leftoverCircuits) {
     const ex = leftover.find((l) => l.panelId === c.panelId);
