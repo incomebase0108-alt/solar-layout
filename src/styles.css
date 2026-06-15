@@ -1,0 +1,289 @@
+:root {
+  --bg: #0f172a;
+  --panel: #1e293b;
+  --panel-2: #273449;
+  --border: #334155;
+  --text: #e2e8f0;
+  --muted: #94a3b8;
+  --accent: #38bdf8;
+  --accent-2: #22c55e;
+  --warn: #f59e0b;
+  --danger: #ef4444;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  font-family: system-ui, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+
+.app {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 0 16px 64px;
+}
+
+header.app-header {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  padding: 20px 0 8px;
+}
+header.app-header h1 { font-size: 20px; margin: 0; }
+header.app-header .sub { color: var(--muted); font-size: 13px; }
+
+nav.tabs {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 20px;
+}
+nav.tabs button {
+  background: none;
+  border: none;
+  color: var(--muted);
+  padding: 10px 16px;
+  font-size: 14px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+}
+nav.tabs button.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+/* ===== 作業フロー順ナビ（StepNav） ===== */
+nav.stepnav { align-items: center; flex-wrap: wrap; }
+nav.stepnav .step-num {
+  display: inline-block;
+  margin-right: 4px;
+  color: var(--accent);
+  font-weight: 700;
+}
+nav.stepnav button.active .step-num { color: var(--accent); }
+nav.stepnav .stepnav-label {
+  color: var(--muted);
+  font-size: 12px;
+  padding-right: 2px;
+}
+nav.stepnav button.master-tab {
+  padding: 8px 10px;
+  font-size: 12px;
+}
+
+.next-hint {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: rgba(56, 189, 248, 0.08);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: -8px 0 16px;
+  font-size: 13px;
+}
+.next-hint .next-hint-text { flex: 1; }
+
+.card {
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px;
+  margin-bottom: 16px;
+}
+.card h2 { margin: 0 0 12px; font-size: 16px; }
+.card h3 { margin: 16px 0 8px; font-size: 14px; color: var(--accent); }
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 10px 14px;
+}
+.field { display: flex; flex-direction: column; gap: 4px; }
+.field label { font-size: 12px; color: var(--muted); }
+.field input, .field select {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text);
+  padding: 7px 9px;
+  font-size: 14px;
+}
+.field input:focus, .field select:focus { outline: 1px solid var(--accent); }
+
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.spacer { flex: 1; }
+
+button.btn {
+  background: var(--accent);
+  color: #03263a;
+  border: none;
+  border-radius: 6px;
+  padding: 8px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+}
+button.btn.secondary { background: var(--panel-2); color: var(--text); border: 1px solid var(--border); }
+button.btn.danger { background: var(--danger); color: #fff; }
+button.btn.small { padding: 4px 10px; font-size: 12px; }
+
+table.list {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+table.list th, table.list td {
+  text-align: left;
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+}
+table.list th { color: var(--muted); font-weight: 500; }
+table.list tr:hover td { background: var(--panel-2); }
+.num { text-align: right; font-variant-numeric: tabular-nums; }
+
+.badge {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  border: 1px solid var(--border);
+}
+.badge.existing { color: var(--warn); border-color: var(--warn); }
+.badge.new { color: var(--accent-2); border-color: var(--accent-2); }
+
+.result-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 12px;
+}
+.metric {
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 12px;
+}
+.metric .label { font-size: 12px; color: var(--muted); }
+.metric .value { font-size: 22px; font-weight: 700; margin-top: 4px; }
+.metric .value small { font-size: 13px; color: var(--muted); font-weight: 400; }
+
+.warnings { margin-top: 12px; }
+.warn-item {
+  background: rgba(245, 158, 11, 0.1);
+  border: 1px solid var(--warn);
+  color: #fde68a;
+  border-radius: 6px;
+  padding: 8px 12px;
+  font-size: 13px;
+  margin-bottom: 6px;
+}
+.empty { color: var(--muted); font-size: 13px; padding: 12px 0; }
+.hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+
+/* 作業フェーズ切替（①既設の設定 / ②変更の検討） */
+.phase-switch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+.phase-switch > button {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--muted);
+  padding: 10px 16px;
+  font-size: 15px;
+  font-weight: 700;
+  cursor: pointer;
+}
+.phase-switch > button small {
+  font-size: 11px;
+  font-weight: 400;
+}
+.phase-switch > button.active {
+  color: #03263a;
+  background: var(--accent);
+  border-color: var(--accent);
+}
+.phase-switch > button.active small { color: #0b3a52; }
+
+/* 検討候補（プラン）切替バー */
+.candidate-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-bottom: 12px;
+  padding: 8px 10px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+}
+.cand-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 6px;
+}
+.cand-pill.active {
+  border-color: var(--accent);
+  background: rgba(56, 189, 248, 0.15);
+}
+.cand-pill button {
+  background: none;
+  border: none;
+  color: var(--text);
+  cursor: pointer;
+  font-size: 13px;
+  padding: 2px 6px;
+}
+.cand-pill:not(.active) button.cand-name { color: var(--muted); }
+.cand-pill button.cand-icon {
+  color: var(--muted);
+  padding: 2px 4px;
+}
+.cand-pill button.cand-icon:hover { color: var(--text); }
+
+/* 折りたたみ（使用頻度の低い機能の収納） */
+details.fold { margin-top: 10px; }
+details.fold > summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 13px;
+  user-select: none;
+}
+details.fold > summary:hover { color: var(--text); }
+details.fold[open] > summary { color: var(--accent); }
+
+/* ===== 印刷 / PDF ===== */
+@media print {
+  body { background: #fff; color: #000; }
+  .app { max-width: none; padding: 0; }
+  .no-print { display: none !important; }
+  nav.tabs, header.app-header { display: none !important; }
+  .card {
+    background: #fff;
+    border: 1px solid #999;
+    color: #000;
+    break-inside: avoid;
+    page-break-inside: avoid;
+  }
+  .card h2, .card h3 { color: #000; }
+  .metric { background: #fff; border: 1px solid #999; }
+  .metric .label, .metric .value small, .hint { color: #333; }
+  table.list th, table.list td { border-bottom: 1px solid #999; }
+  table.list th { color: #333; }
+  .badge { border-color: #999; color: #000; }
+  .warn-item { background: #fff8e1; color: #7a5b00; border-color: #c79100; }
+}

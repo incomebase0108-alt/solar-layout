@@ -1,0 +1,10 @@
+node_modules
+dist
+dist-ssr
+solar-layout-dist.zip
+*.local
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+
+*.tsbuildinfo
