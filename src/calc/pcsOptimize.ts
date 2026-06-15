@@ -202,7 +202,7 @@ export function optimizePcs(input: OptimizeInput): OptimizeResult {
 
   const perUnitCap = Math.min(Math.max(1, maxCircuitsPerUnit), pcs.mpptCount * pcs.stringsPerMppt);
   const totalCircuits = allCircuits.length;
-  const unitsNeededForAll = totalCircuits > 0 ? Math.ceil(totalCircuits / perUnitCap) : 0;
+  const unitsNeededForAll = totalCircuits > 0 && perUnitCap > 0 ? Math.ceil(totalCircuits / perUnitCap) : 0;
 
   const leftoverTotal = leftover.reduce((a, l) => a + l.count, 0);
   return { units, leftover, leftoverTotal, unitsNeededForAll, ampWarnings, notes };
