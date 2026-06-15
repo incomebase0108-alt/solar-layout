@@ -3,7 +3,7 @@ import type { PanelSpec, PcsSpec, PowerPlant, PcsUnitLine, PcsString, DesignCond
 import { uid } from "../store";
 import { summarizeLayout } from "../calc/layoutCount";
 import { calcStringSizing } from "../calc/stringSizing";
-import { optimizePcs, type OptimizeResult } from "../calc/pcsOptimize";
+import { optimizePcs, type OptimizeResult, type PackStrategy } from "../calc/pcsOptimize";
 
 interface Props {
   plant: PowerPlant;
@@ -30,6 +30,7 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
   const [optCount, setOptCount] = useState(8);
   const [optMaxCircuits, setOptMaxCircuits] = useState(pcsList[0]?.mpptCount ?? 2);
   const [optPreview, setOptPreview] = useState<OptimizeResult | null>(null);
+  const [optStrategy, setOptStrategy] = useState<PackStrategy>("spread");
 
   // --- 旧データ（台数まとめ）を 1台＝1行 に自動展開 ---
   useEffect(() => {
@@ -133,6 +134,7 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
         conditions,
         unitCount: optCount,
         maxCircuitsPerUnit: optMaxCircuits,
+        strategy: optStrategy,
       })
     );
   }
@@ -408,10 +410,17 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
               <input type="number" min={1} value={optMaxCircuits}
                 onChange={(e) => setOptMaxCircuits(Math.max(1, Number(e.target.value) || 1))} />
             </div>
+            <div className="field" style={{ minWidth: 200 }}>
+              <label>配分の優先</label>
+              <select value={optStrategy} onChange={(e) => setOptStrategy(e.target.value as PackStrategy)}>
+                <option value="spread">影に強い（MPPT分散）</option>
+                <option value="dense">台数を詰める（分岐優先）</option>
+              </select>
+            </div>
             <button className="btn" onClick={runOptimize}>最適化（下書きを作成）</button>
           </div>
           <span className="hint">
-            図面のパネルを使い切る方向で各台へ割り振った下書きを作ります（電圧上限は厳守・電流超過は警報のみ）。最大回路数は機種のMPPT数が既定（Huaweiは分岐で3など手入力）。
+            図面のパネルを使い切る方向で各台へ割り振った下書きを作ります（電圧上限は厳守・電流超過は警報のみ）。最大回路数は機種のMPPT数が既定（Huaweiは分岐で3など手入力）。分散＝影に強い・電流が素直／詰める＝台数最少（分岐・コスト優先）。
           </span>
 
           {optPreview && (
