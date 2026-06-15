@@ -419,6 +419,11 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
                 {optPreview.leftoverTotal > 0 && optPreview.unitsNeededForAll > optCount &&
                   `（使い切るには約 ${optPreview.unitsNeededForAll} 台必要）`}
               </div>
+              {optPreview.units.length === 0 && (
+                <div className="warn-item" style={{ marginTop: 6 }}>
+                  作成できる回路がありません（図面が空、または図面のパネルがこのパワコンの電圧範囲に合いません）。図面のパネル配置・対象機種・条件を確認してください。
+                </div>
+              )}
               {optPreview.ampWarnings.map((w, i) => (
                 <div className="warn-item" key={"a" + i} style={{ marginTop: 4, color: "var(--warn)", borderColor: "var(--warn)" }}>⚠ {w}</div>
               ))}
