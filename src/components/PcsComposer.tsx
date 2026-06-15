@@ -167,6 +167,12 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
   const activeCand = (plant.candidates ?? []).find((c) => c.id === plant.currentCandidateId);
   const candLabel = activeCand ? activeCand.name : "現在の内容（候補未使用）";
 
+  // 手動でパワコン／ストリングを追加するときの既定パネル：
+  // 図面で最も枚数が多い型式を採用（無ければマスタ先頭）。stockRows は図面枚数の降順。
+  const topFigModel = stockRows.find((r) => r.fig > 0)?.model;
+  const defaultPanelId =
+    panels.find((p) => `${p.maker} ${p.model}` === topFigModel)?.id ?? panels[0]?.id ?? "";
+
   // --- 更新ヘルパ ---
   function setUnits(next: PcsUnitLine[]) {
     updatePlant(plant.id, { pcsUnits: next });
@@ -178,7 +184,7 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
       const base = out[out.length - 1];
       out.push({
         id: uid("str"),
-        panelId: base?.panelId ?? panels[0]?.id ?? "",
+        panelId: base?.panelId ?? defaultPanelId,
         series: base?.series ?? 10,
         parallel: base?.parallel ?? 1,
       });
@@ -238,10 +244,12 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
     setUnits(units.filter((u) => u.id !== id));
   }
   function addString(id: string) {
-    const panel = panels[0];
-    if (!panel) return;
+    const cur = units.find((u) => u.id === id);
+    // 追加ストリングは、そのユニットの既存型式に揃える。無ければ図面で最も多い型式（既定パネル）。
+    const fallbackPanelId = cur?.strings?.[0]?.panelId ?? defaultPanelId;
+    if (!fallbackPanelId) return;
     updateUnit(id, {
-      strings: [...(units.find((u) => u.id === id)?.strings ?? []), { id: uid("str"), panelId: panel.id, series: 10, parallel: 1 }],
+      strings: [...(cur?.strings ?? []), { id: uid("str"), panelId: fallbackPanelId, series: 10, parallel: 1 }],
     });
   }
   function updateString(uid_: string, sid: string, patch: Partial<PcsString>) {
