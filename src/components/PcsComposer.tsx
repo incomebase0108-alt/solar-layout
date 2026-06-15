@@ -3,6 +3,7 @@ import type { PanelSpec, PcsSpec, PowerPlant, PcsUnitLine, PcsString, DesignCond
 import { uid } from "../store";
 import { summarizeLayout } from "../calc/layoutCount";
 import { calcStringSizing } from "../calc/stringSizing";
+import { optimizePcs, type OptimizeResult } from "../calc/pcsOptimize";
 
 interface Props {
   plant: PowerPlant;
@@ -23,6 +24,12 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
   const [bulkCount, setBulkCount] = useState(1);
   const fmt = (n: number) => n.toLocaleString();
   const kw = (n: number) => n.toFixed(2);
+
+  // --- 自動構成（下書き）の入力state ---
+  const [optModelId, setOptModelId] = useState(pcsList[0]?.id ?? "");
+  const [optCount, setOptCount] = useState(8);
+  const [optMaxCircuits, setOptMaxCircuits] = useState(pcsList[0]?.mpptCount ?? 2);
+  const [optPreview, setOptPreview] = useState<OptimizeResult | null>(null);
 
   // --- 旧データ（台数まとめ）を 1台＝1行 に自動展開 ---
   useEffect(() => {
@@ -105,6 +112,35 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
   const overloadPct = totalAcKw > 0 ? (totalDcKw / totalAcKw) * 100 : 0;
   const remainPanels = layoutPanels - usedPanels;
   const errorUnits = computed.filter((g) => g.hasError);
+
+  // --- 自動構成（下書き）：在庫構築とハンドラ ---
+  // 図面の型式別在庫を panelId 単位に変換（最適化の入力）
+  const optInventory = layoutSummary.byPanel
+    .map((b) => {
+      const p = panels.find((pp) => `${pp.maker} ${pp.model}` === b.model);
+      return p ? { panelId: p.id, count: b.count } : null;
+    })
+    .filter((x): x is { panelId: string; count: number } => x !== null);
+
+  function runOptimize() {
+    const pcs = pcsList.find((p) => p.id === optModelId);
+    if (!pcs || optCount < 1 || optMaxCircuits < 1) return;
+    setOptPreview(
+      optimizePcs({
+        inventory: optInventory,
+        panels,
+        pcs,
+        conditions,
+        unitCount: optCount,
+        maxCircuitsPerUnit: optMaxCircuits,
+      })
+    );
+  }
+  function applyOptimize() {
+    if (!optPreview) return;
+    updatePlant(plant.id, { pcsUnits: optPreview.units });
+    setOptPreview(null);
+  }
 
   // --- 型式別の在庫（図面枚数 vs パワコンへ割り振った使用枚数） ---
   // 割り振り作業中に「どの型式があと何枚残っているか」を図面ページへ切り替えずに見るための集計。
@@ -335,6 +371,77 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
             直列数・並列数がパワコンの電圧/電流上限を超えています。各台の赤い表示を確認してください。
           </div>
         )}
+        {/* 自動構成（下書き補助） */}
+        <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
+          <div className="row" style={{ alignItems: "flex-end" }}>
+            <strong style={{ fontSize: 14 }}>🎯 自動構成（下書き）</strong>
+            <div className="field" style={{ minWidth: 220 }}>
+              <label>対象パワコン機種</label>
+              <select
+                value={optModelId}
+                onChange={(e) => {
+                  setOptModelId(e.target.value);
+                  const p = pcsList.find((x) => x.id === e.target.value);
+                  if (p) setOptMaxCircuits(p.mpptCount);
+                }}
+              >
+                {pcsList.map((p) => (
+                  <option key={p.id} value={p.id}>{p.maker} {p.model}（{p.ratedPowerKw}kW）</option>
+                ))}
+              </select>
+            </div>
+            <div className="field" style={{ width: 80 }}>
+              <label>台数</label>
+              <input type="number" min={1} value={optCount}
+                onChange={(e) => setOptCount(Math.max(1, Number(e.target.value) || 1))} />
+            </div>
+            <div className="field" style={{ width: 130 }}>
+              <label>最大回路数/台</label>
+              <input type="number" min={1} value={optMaxCircuits}
+                onChange={(e) => setOptMaxCircuits(Math.max(1, Number(e.target.value) || 1))} />
+            </div>
+            <button className="btn" onClick={runOptimize}>最適化（下書きを作成）</button>
+          </div>
+          <span className="hint">
+            図面のパネルを使い切る方向で各台へ割り振った下書きを作ります（電圧上限は厳守・電流超過は警報のみ）。最大回路数は機種のMPPT数が既定（Huaweiは分岐で3など手入力）。
+          </span>
+
+          {optPreview && (
+            <div className="card" style={{ marginTop: 10, background: "var(--panel-2)" }}>
+              <div className="row">
+                <strong>プレビュー（{optPreview.units.length} 台）</strong>
+                <span className="spacer" />
+                <button className="btn small" onClick={applyOptimize}>この内容を適用</button>
+                <button className="btn secondary small" onClick={() => setOptPreview(null)}>破棄</button>
+              </div>
+              <div className="hint" style={{ marginTop: 4 }}>
+                残 {fmt(optPreview.leftoverTotal)} 枚
+                {optPreview.leftoverTotal > 0 && optPreview.unitsNeededForAll > optCount &&
+                  `（使い切るには約 ${optPreview.unitsNeededForAll} 台必要）`}
+              </div>
+              {optPreview.ampWarnings.map((w, i) => (
+                <div className="warn-item" key={"a" + i} style={{ marginTop: 4, color: "var(--warn)", borderColor: "var(--warn)" }}>⚠ {w}</div>
+              ))}
+              {optPreview.notes.map((n, i) => (
+                <div className="hint" key={"n" + i} style={{ marginTop: 2 }}>・{n}</div>
+              ))}
+              <table className="list" style={{ marginTop: 8 }}>
+                <thead><tr><th>#</th><th>MPPT構成（型式 / 直列 × 並列）</th><th className="num">枚数</th></tr></thead>
+                <tbody>
+                  {optPreview.units.map((u, i) => {
+                    const cells = (u.strings ?? []).reduce((a, s) => a + s.series * s.parallel, 0);
+                    const desc = (u.strings ?? []).map((s) => {
+                      const p = panels.find((pp) => pp.id === s.panelId);
+                      return `${p ? p.model : "?"} ${s.series}直×${s.parallel}並`;
+                    }).join(" ／ ");
+                    return (<tr key={u.id}><td>#{i + 1}</td><td>{desc}</td><td className="num">{cells}</td></tr>);
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
         <div className="row" style={{ marginTop: 10, alignItems: "flex-end" }}>
           <button className="btn" onClick={() => addUnits(1)}>＋ パワコンを1台追加</button>
           <div className="field" style={{ width: 90 }}>
