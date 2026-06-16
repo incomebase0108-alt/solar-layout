@@ -381,6 +381,21 @@ export interface WiringPlan {
   shadeFactor: number;
 }
 
+/** 概算コストの任意の追加費目（その他費用）。発電所ごとに保存する。 */
+export interface ExtraCostLine {
+  id: string;
+  /** 費目名（例: 連系負担金 / 申請費 / 値引き） */
+  label: string;
+  /** 数量 */
+  qty: number;
+  /** 単位（式 / 台 / m / 枚 など自由入力） */
+  unit: string;
+  /** 単価（円・マイナス可＝値引き） */
+  unitYen: number;
+  /** 諸経費(率%)の対象にするか */
+  inMisc: boolean;
+}
+
 export interface PowerPlant {
   id: string;
   /** 発電所名 */
@@ -413,6 +428,8 @@ export interface PowerPlant {
   candidates?: PlanCandidate[];
   /** アクティブな候補の id */
   currentCandidateId?: string;
+  /** 概算コストの「その他費用」行（任意・発電所ごとに保存） */
+  extraCostLines?: ExtraCostLine[];
 }
 
 /**
