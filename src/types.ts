@@ -444,6 +444,8 @@ export interface PcsUnitLine {
   note?: string;
   /** 1台あたりのストリング構成（任意）。未指定なら台数×ACのみ集計。 */
   strings?: PcsString[];
+  /** この台の新設/既設の上書き。未指定なら機種マスタの kind を継承。 */
+  kind?: "existing" | "new";
 }
 
 export const EMPTY_WIRING: WiringPlan = {
