@@ -508,6 +508,19 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
                 MPPT {g.pcs?.mpptCount ?? "—"} 回路 ／ マルチ{g.pcs?.multiMppt === false ? "なし（全ストリング同一が必要）" : "あり"}
               </div>
             </div>
+            <div className="field" style={{ minWidth: 150 }}>
+              <label>種別</label>
+              <select
+                value={g.line.kind ?? g.pcs?.kind ?? "new"}
+                onChange={(e) => updateUnit(g.line.id, { kind: e.target.value as "existing" | "new" })}
+              >
+                <option value="new">新設</option>
+                <option value="existing">既設（流用）</option>
+              </select>
+              <div className="hint">
+                {(g.line.kind ?? g.pcs?.kind) === "existing" ? "流用＝設置費なし" : "新設＝設置費がかかる"}
+              </div>
+            </div>
             <div className="field" style={{ flex: 1, minWidth: 160 }}>
               <label>メモ</label>
               <input
