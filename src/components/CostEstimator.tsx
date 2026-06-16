@@ -66,11 +66,12 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
 
     const newLines = [...map.entries()].map(([panelId, v]) => ({ panelId, ...v }));
     const newTotal = newLines.reduce((s, l) => s + l.count, 0);
-    // 新設パワコン台数（マスタが新設のもの）
+    // 新設パワコン台数（台ごとの実効種別＝ u.kind ?? マスタの kind が新設のもの）
     let newPcs = 0;
     for (const u of plant.pcsUnits ?? []) {
       const pcs = pcsList.find((p) => p.id === u.pcsId);
-      if (pcs?.kind === "new") newPcs += u.count ?? 1;
+      const eff = u.kind ?? pcs?.kind;
+      if (eff === "new") newPcs += u.count ?? 1;
     }
     return { newLines, newTotal, removedExisting, keptKw, beforeKw, newPcs };
   }, [plant.layout.arrays, plant.layout.freePanels, plant.layout.manualCurrent, plant.pcsUnits, panels, pcsList]);
