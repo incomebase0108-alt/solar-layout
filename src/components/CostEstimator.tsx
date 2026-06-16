@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { PanelSpec, PcsSpec, PowerPlant, CostRates } from "../types";
+import type { PanelSpec, PcsSpec, PowerPlant, CostRates, ExtraCostLine } from "../types";
 import { estimateCost, estimateAfterGeneration, estimateRoi, type NewPanelLine } from "../calc/cost";
 import { arrayCellStats } from "../calc/layoutCount";
 import { uid } from "../store";
@@ -111,6 +111,15 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
     setPcsMode(derived.newPcs > 0 ? "new" : "keep");
   }
 
+  // ===== その他費用（任意・発電所ごとに保存） =====
+  const extraCostLines = plant.extraCostLines ?? [];
+  const setExtra = (next: ExtraCostLine[]) => updatePlant(plant.id, { extraCostLines: next });
+  const addExtra = () =>
+    setExtra([...extraCostLines, { id: uid("ex"), label: "", qty: 1, unit: "式", unitYen: 0, inMisc: false }]);
+  const updateExtra = (id: string, patch: Partial<ExtraCostLine>) =>
+    setExtra(extraCostLines.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+  const removeExtra = (id: string) => setExtra(extraCostLines.filter((l) => l.id !== id));
+
   // ===== 集計 =====
   const newTotal = lines.reduce((s, l) => s + l.count, 0);
   const removedTotal = removedDisposal + removedStock;
@@ -124,9 +133,12 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
         pcsUnitYen: effPcsUnit,
         removedPcsCount,
         extraLines,
+        otherLines: extraCostLines.map((l) => ({
+          label: l.label, qty: l.qty, unit: l.unit, unitYen: l.unitYen, inMisc: l.inMisc,
+        })),
         rates: costRates,
       }),
-    [lines, removedDisposal, removedStock, pcsMode, newPcsCount, effPcsUnit, removedPcsCount, loggerType, loggerUnitYen, costRates]
+    [lines, removedDisposal, removedStock, pcsMode, newPcsCount, effPcsUnit, removedPcsCount, loggerType, loggerUnitYen, costRates, plant.extraCostLines]
   );
 
   // ===== 現況との相違チェック =====
@@ -315,6 +327,60 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
               />
             </div>
           )}
+        </div>
+      </div>
+
+      <div className="card">
+        <div className="row">
+          <h2 style={{ margin: 0 }}>その他費用（任意）</h2>
+          <span className="spacer" />
+          <button className="btn secondary small no-print" onClick={addExtra}>＋ その他費用を追加</button>
+        </div>
+        <table className="list">
+          <thead>
+            <tr>
+              <th>費目名</th><th className="num">数量</th><th>単位</th>
+              <th className="num">単価(円)</th><th>諸経費</th><th className="num">金額</th><th></th>
+            </tr>
+          </thead>
+          <tbody>
+            {extraCostLines.map((l) => (
+              <tr key={l.id}>
+                <td>
+                  <input type="text" placeholder="例) 連系負担金 / 申請費 / 値引き"
+                    value={l.label} onChange={(e) => updateExtra(l.id, { label: e.target.value })} />
+                </td>
+                <td className="num">
+                  <input type="number" min={0} style={{ width: 64 }} value={l.qty}
+                    onChange={(e) => updateExtra(l.id, { qty: Number(e.target.value) || 0 })} />
+                </td>
+                <td>
+                  <input type="text" style={{ width: 56 }} value={l.unit}
+                    onChange={(e) => updateExtra(l.id, { unit: e.target.value })} />
+                </td>
+                <td className="num">
+                  <input type="number" style={{ width: 110 }} value={l.unitYen}
+                    onChange={(e) => updateExtra(l.id, { unitYen: Number(e.target.value) || 0 })} />
+                </td>
+                <td style={{ textAlign: "center" }}>
+                  <input type="checkbox" checked={l.inMisc}
+                    onChange={(e) => updateExtra(l.id, { inMisc: e.target.checked })} />
+                </td>
+                <td className="num" style={{ color: l.qty * l.unitYen < 0 ? "var(--danger)" : undefined }}>
+                  {yen(l.qty * l.unitYen)}
+                </td>
+                <td className="num">
+                  <button className="btn danger small" onClick={() => removeExtra(l.id)}>×</button>
+                </td>
+              </tr>
+            ))}
+            {extraCostLines.length === 0 && (
+              <tr><td colSpan={7} className="empty">「＋ その他費用を追加」で連系負担金・申請費・値引き等を入れられます。</td></tr>
+            )}
+          </tbody>
+        </table>
+        <div className="hint">
+          数量×単価で金額。値引きは単価にマイナスを入力。「諸経費」にチェックした行だけ諸経費率の対象になります。発電所ごとに保存されます。
         </div>
       </div>
 
