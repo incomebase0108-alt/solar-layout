@@ -68,6 +68,55 @@ describe("概算コスト", () => {
     // 材料 7*200000=1,400,000 + 設置 7*30000=210,000 + 撤去 7*15000=105,000
     expect(r.subtotalYen).toBe(1_715_000);
   });
+
+  it("その他費用 inMisc:true は諸経費対象（諸経費が増える）", () => {
+    const r = estimateCost({
+      newPanelLines: [{ label: "A", count: 100, unitYen: 20000, w: 450 }],
+      removedDisposal: 0, removedStock: 0, newPcsCount: 0, pcsUnitYen: 0, removedPcsCount: 0,
+      otherLines: [{ label: "足場", qty: 1, unit: "式", unitYen: 100000, inMisc: true }],
+      rates,
+    });
+    // base: 材料2,000,000 + 設置800,000 = 2,800,000、+足場100,000 → 小計2,900,000
+    expect(r.subtotalYen).toBe(2_900_000);
+    expect(r.miscYen).toBe(290_000);   // 2,900,000 * 10%
+    expect(r.totalYen).toBe(3_190_000);
+  });
+
+  it("その他費用 inMisc:false は諸経費対象外（小計・合計に入るが諸経費は増えない）", () => {
+    const r = estimateCost({
+      newPanelLines: [{ label: "A", count: 100, unitYen: 20000, w: 450 }],
+      removedDisposal: 0, removedStock: 0, newPcsCount: 0, pcsUnitYen: 0, removedPcsCount: 0,
+      otherLines: [{ label: "連系負担金", qty: 1, unit: "式", unitYen: 100000, inMisc: false }],
+      rates,
+    });
+    expect(r.subtotalYen).toBe(2_900_000);
+    expect(r.miscYen).toBe(280_000);   // base 2,800,000 * 10% のみ
+    expect(r.totalYen).toBe(3_180_000); // 小計2,900,000 + 諸経費280,000
+  });
+
+  it("その他費用の値引き（単価マイナス）で小計・合計が減る", () => {
+    const r = estimateCost({
+      newPanelLines: [{ label: "A", count: 100, unitYen: 20000, w: 450 }],
+      removedDisposal: 0, removedStock: 0, newPcsCount: 0, pcsUnitYen: 0, removedPcsCount: 0,
+      otherLines: [{ label: "値引き", qty: 1, unit: "式", unitYen: -300000, inMisc: false }],
+      rates,
+    });
+    expect(r.subtotalYen).toBe(2_500_000); // 2,800,000 - 300,000
+    expect(r.miscYen).toBe(280_000);       // base 2,800,000 * 10%
+    expect(r.totalYen).toBe(2_780_000);
+  });
+
+  it("その他費用が見積内訳（lines）に表示行として並ぶ", () => {
+    const r = estimateCost({
+      newPanelLines: [], removedDisposal: 0, removedStock: 0, newPcsCount: 0, pcsUnitYen: 0, removedPcsCount: 0,
+      otherLines: [{ label: "申請費", qty: 2, unit: "件", unitYen: 50000, inMisc: false }],
+      rates,
+    });
+    const row = r.lines.find((l) => l.label === "申請費");
+    expect(row).toBeTruthy();
+    expect(row?.amountYen).toBe(100_000);
+    expect(row?.unit).toBe("件");
+  });
 });
 
 describe("変更後発電量の推定", () => {

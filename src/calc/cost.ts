@@ -44,6 +44,8 @@ export interface CostInput {
   removedPcsCount: number;
   /** 周辺機器など追加の材料費行（監視装置など）。任意。 */
   extraLines?: { label: string; count: number; unitYen: number }[];
+  /** その他費用（任意）。inMisc=true は諸経費対象、false は対象外。 */
+  otherLines?: { label: string; qty: number; unit: string; unitYen: number; inMisc: boolean }[];
   rates: CostRates;
 }
 
@@ -59,7 +61,7 @@ export function estimateCost(input: CostInput): CostResult {
   const newPanelW = newPanelLines.reduce((s, l) => s + l.count * l.w, 0);
   const removedTotal = removedDisposal + removedStock;
 
-  const lines: CostLine[] = [
+  const baseLines: CostLine[] = [
     // 新パネル材料費（型式ごと）
     ...newPanelLines.map((l) => ({
       label: `新パネル 材料費（${l.label}）`,
@@ -120,8 +122,19 @@ export function estimateCost(input: CostInput): CostResult {
     })),
   ].filter((l) => l.qty > 0);
 
+  // その他費用（任意）：表示行と諸経費対象分
+  const otherDisplay: CostLine[] = (input.otherLines ?? [])
+    .filter((l) => l.qty !== 0)
+    .map((l) => ({ label: l.label, qty: l.qty, unit: l.unit, unitYen: l.unitYen, amountYen: l.qty * l.unitYen }));
+  const otherMiscBaseYen = (input.otherLines ?? [])
+    .filter((l) => l.qty !== 0 && l.inMisc)
+    .reduce((s, l) => s + l.qty * l.unitYen, 0);
+
+  const lines: CostLine[] = [...baseLines, ...otherDisplay];
   const subtotalYen = lines.reduce((s, l) => s + l.amountYen, 0);
-  const miscYen = Math.round((subtotalYen * rates.miscRatePct) / 100);
+  // 諸経費は「既存行 ＋ inMisc のその他費用」だけにかける
+  const miscBaseYen = baseLines.reduce((s, l) => s + l.amountYen, 0) + otherMiscBaseYen;
+  const miscYen = Math.round((miscBaseYen * rates.miscRatePct) / 100);
   const totalYen = subtotalYen + miscYen;
   const yenPerW = newPanelW > 0 ? totalYen / newPanelW : null;
 
