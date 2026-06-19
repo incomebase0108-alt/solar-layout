@@ -811,8 +811,14 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
     const cp = { ...(arr.cellPanels ?? {}) };
     if (panelId === arr.panelId) delete cp[key];
     else cp[key] = panelId;
+    // 既設配列：型式を変えたセルは「パネルが在る」とみなして流用（keep）にも加える。
+    // （流用マークが無いと改修後枚数・結線対象から外れ、結線図で穴になるため。selPaint と同じ理由）
+    let keepCells = arr.keepCells;
+    if (arr.keepCells !== undefined && !new Set(arr.keepCells).has(key)) {
+      keepCells = [...arr.keepCells, key];
+    }
     patch({
-      arrays: layout.arrays.map((a) => (a.id === arr.id ? { ...a, cellPanels: cp } : a)),
+      arrays: layout.arrays.map((a) => (a.id === arr.id ? { ...a, cellPanels: cp, keepCells } : a)),
     });
   }
 
@@ -875,7 +881,16 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
         if (pid === a.panelId) delete cp[k];
         else cp[k] = pid;
       });
-      return { ...a, cellPanels: cp };
+      // 既設配列：型式を塗ったセルは「パネルが在る」とみなして流用（keep）にも加える。
+      // これを付けないと、流用マークの無いセルは改修後枚数・結線対象から外れ、
+      // 完成後の図面で結線図に描かれず「穴」になってしまう（ホバーでは型式が出るのに消える）。
+      let keepCells = a.keepCells;
+      if (a.keepCells !== undefined) {
+        const keep = new Set(a.keepCells);
+        keys.forEach((k) => keep.add(k));
+        keepCells = [...keep];
+      }
+      return { ...a, cellPanels: cp, keepCells };
     });
     flashMsg(`🎨 ${n}枚を ${p ? `${p.model}（${p.pmaxW}W）` : "選択型式"} に変更しました`);
   }
@@ -1735,12 +1750,18 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     let pcsRows = "";
     let totalAc = 0;
     let no = 0;
+    // 既設流用／新設の区分別集計（工事概要で内訳を出すため）
+    let exAc = 0, exNo = 0, newAc = 0, newNo = 0;
     for (const u of units) {
       const pcs = pcsList?.find((p) => p.id === u.pcsId);
       const ac = pcs?.ratedPowerKw ?? 0;
+      // 実効区分：台の上書き ＞ 機種マスタ ＞ 既定（新設）。PcsComposer と同じ解決順。
+      const kind = u.kind ?? pcs?.kind ?? "new";
+      const kindLabel = kind === "existing" ? "既設" : "新設";
       for (let i = 0; i < u.count; i++) {
         no++;
         totalAc += ac;
+        if (kind === "existing") { exNo++; exAc += ac; } else { newNo++; newAc += ac; }
         const str = (u.strings ?? [])
           .map((s) => {
             const pn = panels.find((p) => p.id === s.panelId);
@@ -1748,7 +1769,7 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
           })
           .join("、");
         const pcsName = pcs ? `${pcs.maker} ${pcs.model}${pcs.warranty ? `（${pcs.warranty}）` : ""}` : "—";
-        pcsRows += `<tr><td>#${no}</td><td>${esc(pcsName)}</td><td style="text-align:right">${ac.toFixed(2)}</td><td>${esc(str)}</td></tr>`;
+        pcsRows += `<tr><td>#${no}</td><td>${kindLabel}</td><td>${esc(pcsName)}</td><td style="text-align:right">${ac.toFixed(2)}</td><td>${esc(str)}</td></tr>`;
       }
     }
     const baseRow = base
@@ -1773,7 +1794,7 @@ body{font-family:sans-serif;color:#0b1220;margin:0}
 .page{page-break-after:always;padding:6mm}
 .page:last-child{page-break-after:auto}
 h1{font-size:20px;margin:0 0 6px} h2{font-size:15px;border-bottom:2px solid #0b1220;padding-bottom:3px}
-img{width:100%;height:auto;border:1px solid #cbd5e1;margin-top:6px}
+img{display:block;max-width:100%;max-height:160mm;width:auto;height:auto;border:1px solid #cbd5e1;margin:6px auto 0}
 table{border-collapse:collapse;width:100%;font-size:12px;margin-top:6px}
 th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align:left}
 .meta{font-size:13px} .meta td{border:none;padding:2px 8px 2px 0}
@@ -1794,7 +1815,9 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
   </table>
   <table style="margin-top:8px">
     <tr><th>パワコン構成</th><th style="text-align:right">合計AC(kW)</th><th style="text-align:right">台数</th></tr>
-    <tr><td>新設パワコン</td><td style="text-align:right">${totalAc.toFixed(2)}</td><td style="text-align:right">${no} 台</td></tr>
+    ${exNo ? `<tr><td>既設パワコン（流用）</td><td style="text-align:right">${exAc.toFixed(2)}</td><td style="text-align:right">${exNo} 台</td></tr>` : ""}
+    ${newNo ? `<tr><td>新設パワコン</td><td style="text-align:right">${newAc.toFixed(2)}</td><td style="text-align:right">${newNo} 台</td></tr>` : ""}
+    ${no === 0 ? `<tr><td>パワコン</td><td style="text-align:right">0.00</td><td style="text-align:right">0 台</td></tr>` : ""}
   </table>
 </div>
 
@@ -1812,9 +1835,9 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
 <div class="page">
   <h2>③ パワコン構成</h2>
   <table>
-    <tr><th>#</th><th>機種</th><th style="text-align:right">AC(kW)</th><th>ストリング</th></tr>
-    ${pcsRows || '<tr><td colspan="4">パワコン構成が未設定です。</td></tr>'}
-    <tr><th colspan="2">合計</th><th style="text-align:right">${totalAc.toFixed(2)}</th><th>${no} 台</th></tr>
+    <tr><th>#</th><th>区分</th><th>機種</th><th style="text-align:right">AC(kW)</th><th>ストリング</th></tr>
+    ${pcsRows || '<tr><td colspan="5">パワコン構成が未設定です。</td></tr>'}
+    <tr><th colspan="3">合計</th><th style="text-align:right">${totalAc.toFixed(2)}</th><th>${no} 台</th></tr>
   </table>
 </div>
 

@@ -6,5 +6,5 @@ echo   ソーラーレイアウト 起動中...
 echo   ブラウザが自動で開きます。
 echo   この窓は閉じないでください（閉じると止まります）
 echo ================================================
-call npx vite --open
+call npx vite --open --port 5173 --strictPort
 pause
