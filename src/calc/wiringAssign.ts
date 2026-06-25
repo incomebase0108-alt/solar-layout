@@ -45,8 +45,17 @@ export interface WiringAssignResult {
 }
 
 /**
- * レイアウトのパネルを、パワコン構成のストリング（直列×並列）に順番に割り付ける。
- * 行優先（左→右・上→下、配列順）。影ゾーンのパネルは後回し＝末尾に固める。
+ * レイアウトのパネルを、パワコン構成のストリング（型式・直列×並列）の「通り」に割り付ける。
+ *
+ * 割付の3原則（パワコン構成の通り＝最善）:
+ *  1. 型式一致：各ストリングは、その string の panelId と同じ型式の実セルだけを取る。
+ *     （例 CS6P-255P のストリングには 255P のパネルしか割り当てない）
+ *  2. 枚数きっちり：直列×並列の枚数だけ、型式別プールから順に消費する。
+ *  3. 物理的まとまり：型式別プールは「配列順→行優先（左→右・上→下）」で並べるため、
+ *     連続消費すると同じ配列の隣接セルがそのままストリングになる。影セルは型式内で末尾へ。
+ *
+ * 型式が合うセルが足りなければ割り当て不足（unassigned）として残し、余れば未割付のまま残す
+ * ＝構成表とレイアウトの食い違いがそのまま図面に出る（隠さない）。
  * overrides があるセルは手編集で上書き（自動割付より優先）。
  * 既存配列は流用セルのみ対象（入換セルは撤去・置換で対象外）。
  */
@@ -59,11 +68,18 @@ export function assignWiring(
   const ppm = pixelsPerMeterOf(layout.calibration);
   const zones = layout.shadowZones ?? [];
 
-  // --- 結線対象セルの収集（改修案フィルタ）---
-  const cellInfo = new Map<string, { arrayId: string; r: number; c: number; shaded: boolean }>();
+  // --- 結線対象セルの収集（改修案フィルタ）＋ 型式別プール ---
+  // 各セルの実型式（cellPanels の上書き ＞ 配列の panelId）を記録し、型式ごとに
+  // 「配列順→行優先」で並べたプールを作る。連続消費＝物理的に隣接したストリングになる。
+  const cellInfo = new Map<string, { arrayId: string; r: number; c: number; shaded: boolean; panelId: string }>();
   const targetCells = new Set<string>();
-  const sunny: string[] = [];
-  const shaded: string[] = [];
+  const poolSunny = new Map<string, string[]>(); // panelId → セルキー（日向）
+  const poolShaded = new Map<string, string[]>(); // panelId → セルキー（影）
+  const pushPool = (map: Map<string, string[]>, pid: string, key: string) => {
+    const arr = map.get(pid);
+    if (arr) arr.push(key);
+    else map.set(pid, [key]);
+  };
   for (const a of layout.arrays) {
     const panel = panels.find((p) => p.id === a.panelId);
     const dims = panelPxDims(a, panel, ppm);
@@ -72,6 +88,7 @@ export function assignWiring(
     const removed = new Set(a.removedCells ?? []);
     const keepSet = new Set(a.keepCells ?? []);
     const hasKeep = keepSet.size > 0;
+    const cellPanels = a.cellPanels ?? {};
     for (let r = 0; r < a.rows; r++) {
       for (let c = 0; c < a.cols; c++) {
         const k = cellKey(r, c);
@@ -80,17 +97,22 @@ export function assignWiring(
         if (hasKeep && !keepSet.has(k)) continue; // 入換セルは結線対象外
         const key = `${a.id}:${r},${c}`;
         const sh = shadedSet.has(k);
+        const pid = cellPanels[k] ?? a.panelId; // セルの実型式
         targetCells.add(key);
-        cellInfo.set(key, { arrayId: a.id, r, c, shaded: sh });
-        (sh ? shaded : sunny).push(key);
+        cellInfo.set(key, { arrayId: a.id, r, c, shaded: sh, panelId: pid });
+        pushPool(sh ? poolShaded : poolSunny, pid, key);
       }
     }
   }
-  const ordered = [...sunny, ...shaded];
+  // 型式ごとの消費列（日向→影の順）とカーソル。
+  const pool = new Map<string, string[]>();
+  for (const pid of new Set([...poolSunny.keys(), ...poolShaded.keys()])) {
+    pool.set(pid, [...(poolSunny.get(pid) ?? []), ...(poolShaded.get(pid) ?? [])]);
+  }
+  const cursor = new Map<string, number>(); // panelId → 次に取るインデックス
 
-  // --- 自動割付 ---
+  // --- 自動割付（型式一致・枚数きっちり・型式別プールから連続消費）---
   const byCell = new Map<string, CellAssign>();
-  let idx = 0;
   let pcsNo = 0;
   for (const u of pcsUnits) {
     // 1行に複数台（count>1）の旧形式データも、台数分を展開して割り付ける
@@ -101,15 +123,18 @@ export function assignWiring(
       let stringNo = 0;
       for (const s of u.strings ?? []) {
         stringNo++;
+        const list = pool.get(s.panelId) ?? []; // この型式のプール
+        let cur = cursor.get(s.panelId) ?? 0;
         const par = Math.max(1, s.parallel);
         const ser = Math.max(0, s.series);
         for (let p = 1; p <= par; p++) {
-          for (let n = 0; n < ser && idx < ordered.length; n++) {
-            const key = ordered[idx++];
+          for (let n = 0; n < ser && cur < list.length; n++) {
+            const key = list[cur++];
             const info = cellInfo.get(key)!;
             byCell.set(key, { arrayId: info.arrayId, r: info.r, c: info.c, pcsNo, stringNo, parallelNo: p, color, shaded: info.shaded });
           }
         }
+        cursor.set(s.panelId, cur);
       }
     }
   }

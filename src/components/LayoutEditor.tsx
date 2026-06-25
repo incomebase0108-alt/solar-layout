@@ -115,7 +115,9 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
     setHistLen(historyRef.current.length);
     if (prev) rawPatch(prev); // 履歴に積まずに丸ごと復元
   }
-  const [view, setView] = useState<View>({ tx: 40, ty: 40, zoom: 0.5 });
+  const [viewState, setView] = useState<View>({ tx: 40, ty: 40, zoom: 0.5 });
+  // 通常はこの view を使う。draw だけは viewOverride で一時的に別ビューを描ける（PDFの全景撮影用）。
+  const view = viewState;
   const [mode, setMode] = useState<"pan" | "calibrate" | "select" | "shadow" | "remove" | "scan" | "keeprect" | "removerect" | "cellpanel" | "missing" | "missrect" | "areaselect">("pan");
   // 作業フェーズ：①既設の設定（現況図面づくり）と ②変更の検討（流用・撤去・結線）を分けて表示する。
   // 図面タブを開いたときは①から始める（既定）。候補切替等の即時再マウント時のみ直前のフェーズを引き継ぐ。
@@ -352,6 +354,52 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
     setView({ tx: c.width / 2 - zoom * cx, ty: c.height / 2 - zoom * cy, zoom });
   }
 
+  /**
+   * PDF全景撮影用：画像＋全パネル（＋単独パネル）がすべて収まる表示ビューを計算する（回転考慮・少し余白）。
+   * PDFの図面は現在のキャンバス表示をそのまま画像化するため、パン/ズーム次第で上部などが欠ける。
+   * これを draw の viewOverride に渡して、表示状態に依存せず常に全体を撮る。
+   */
+  function computePdfFitView(): View | null {
+    const c = canvasRef.current;
+    if (!c) return null;
+    // 枠は「パネルの占有範囲」だけで決める＝最大拡大でパネルが大きく写る。
+    // 写真全体を入れると引きの絵になり拡大されないため、画像四隅はパネルが
+    // 1枚も無いときのフォールバックとしてのみ使う。
+    const pts: { x: number; y: number }[] = [];
+    const img = imgRef.current;
+    for (const a of layout.arrays) {
+      const { pw, ph, gapXpx, gapYpx } = arrayPanelPx(a);
+      const tW = a.cols * pw + (a.cols - 1) * gapXpx;
+      const tH = a.rows * ph + (a.rows - 1) * gapYpx;
+      const ar = (a.rotationDeg * Math.PI) / 180;
+      const cs = Math.cos(ar), sn = Math.sin(ar);
+      for (const [lx, ly] of [[0, 0], [tW, 0], [0, tH], [tW, tH]] as const) {
+        pts.push({ x: a.posXpx + cs * lx - sn * ly, y: a.posYpx + sn * lx + cs * ly });
+      }
+    }
+    for (const f of layout.freePanels ?? []) {
+      const { pw, ph } = freePanelPx(f);
+      const rad = Math.max(pw, ph) / 2;
+      pts.push({ x: f.posXpx - rad, y: f.posYpx - rad }, { x: f.posXpx + rad, y: f.posYpx + rad });
+    }
+    // パネルが1枚も無いときだけ写真全体にフォールバック。
+    if (pts.length === 0 && img) {
+      pts.push({ x: 0, y: 0 }, { x: img.width, y: 0 }, { x: 0, y: img.height }, { x: img.width, y: img.height });
+    }
+    if (pts.length === 0) return null;
+    const cs = Math.cos(rot), sn = Math.sin(rot);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const p of pts) {
+      const qx = cs * p.x - sn * p.y, qy = sn * p.x + cs * p.y;
+      minX = Math.min(minX, qx); maxX = Math.max(maxX, qx);
+      minY = Math.min(minY, qy); maxY = Math.max(maxY, qy);
+    }
+    const bw = maxX - minX || 1, bh = maxY - minY || 1;
+    const zoom = Math.max(0.05, Math.min(8, Math.min(c.width / bw, c.height / bh) * 0.96));
+    const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2;
+    return { tx: c.width / 2 - zoom * cx, ty: c.height / 2 - zoom * cy, zoom };
+  }
+
   // --- 座標変換 ---
   const screenToImage = useCallback(
     (sx: number, sy: number) => {
@@ -414,11 +462,14 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
   );
 
   // --- 描画 ---
-  const draw = useCallback((wiringOverride?: WiringAssignResult | null, phaseOverride?: "kisetsu" | "henkou") => {
+  const draw = useCallback((wiringOverride?: WiringAssignResult | null, phaseOverride?: "kisetsu" | "henkou", viewOverride?: View) => {
     const c = canvasRef.current;
     if (!c) return;
     const ctx = c.getContext("2d");
     if (!ctx) return;
+    // 通常は state の view。PDFの全景撮影など、特定ビューを React の再描画を待たず
+    // 同期で描きたいときは引数で渡す（パン/ズームに依存せず全体を確実に撮る）。
+    const view = viewOverride ?? viewState;
     // 通常は state 由来の wiring を描く。PDF出力など、特定の結線状態を
     // React の再描画を待たずに同期で描きたいときは引数で渡す。
     const wv = wiringOverride !== undefined ? wiringOverride : wiring;
@@ -1814,12 +1865,14 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     // （PDFボタンは②変更の検討にあるため常に henkou）に依存せず確実に描き分ける。
     // （以前は phase を切り替えず draw を2回呼ぶだけだったため、「改修前」ラベルの
     //   ページに改修後レイアウトが描かれ、ラベルと中身がずれていた。）
-    draw(null, "kisetsu"); // ① 改修前（既設のみ・満数）
+    // 図面は現在の表示ではなく「全景が収まるビュー」で撮る（上部などの欠け防止）。3枚とも同じ枠で統一。
+    const fitView = computePdfFitView() ?? undefined;
+    draw(null, "kisetsu", fitView); // ① 改修前（既設のみ・満数）
     const imgBefore = c.toDataURL("image/jpeg", 0.9);
-    draw(null, "henkou"); // ② 改修後レイアウト（結線なし）
+    draw(null, "henkou", fitView); // ② 改修後レイアウト（結線なし）
     const imgAfter = c.toDataURL("image/jpeg", 0.9);
     const wiringOn = assignWiring(layout, panels, pcsUnits ?? [], layout.wiringOverrides);
-    draw(wiringOn, "henkou"); // ③ 配線図（結線・パワコン割付）
+    draw(wiringOn, "henkou", fitView); // ③ 配線図（結線・パワコン割付）
     const imgWiring = c.toDataURL("image/jpeg", 0.9);
     draw(); // 画面表示を現在の state に戻す
 
