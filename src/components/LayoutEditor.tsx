@@ -1725,18 +1725,19 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
   }
 
   /**
-   * 工事説明書PDFの凡例用：パネル型式×区分(既設緑/新設青)ごとの枚数を実データから集計する。
+   * 工事説明書PDFの凡例用：パネル型式×区分(既設緑/撤去赤/新設青)ごとの枚数を実データから集計する。
    * before=true（改修前ページ用）は既設配列を「満数」で数える（改修前の図面が満数表示なのに一致）。
-   * before=false（改修後ページ用）は既設＝流用(keep)、新設＝撤去後の全数＋単独パネル。
+   * before=false（改修後ページ用）は既設＝流用(keep)・撤去＝既設配列の撤去セル・新設＝全数＋単独パネル。
    * cellPanels（1配列内の型式混在）に対応するため、summarizeLayout と同じくセル単位で数える
    * （配列の代表型式だけで数えると、混在した2型式目が欠落する）。
    */
   function summarizePanelLegend(
     before: boolean
-  ): { color: string; kind: "既設" | "新設"; model: string; w: number; orient: string; count: number; kw: number; label: string }[] {
-    // key = `${panelId}|${kind}`（同じ型式でも既設/新設を別行に）
-    const map = new Map<string, { kind: "既設" | "新設"; name: string; w: number; orient: string; count: number }>();
-    const bump = (panelId: string, kind: "既設" | "新設", orient: string) => {
+  ): { color: string; kind: "既設" | "撤去" | "新設"; model: string; w: number; orient: string; count: number; kw: number; label: string }[] {
+    type Kind = "既設" | "撤去" | "新設";
+    // key = `${panelId}|${kind}`（同じ型式でも区分を別行に）
+    const map = new Map<string, { kind: Kind; name: string; w: number; orient: string; count: number }>();
+    const bump = (panelId: string, kind: Kind, orient: string) => {
       const p = panels.find((x) => x.id === panelId);
       const k = `${panelId}|${kind}`;
       const cur =
@@ -1752,7 +1753,6 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     };
     for (const a of layout.arrays) {
       const marked = a.keepCells !== undefined; // 既設配列＝true／新設配列＝false
-      const kind: "既設" | "新設" = marked ? "既設" : "新設";
       if (before && !marked) continue; // 改修前は新設配列を出さない
       const missing = new Set(a.missingCells ?? []);
       const keep = new Set(a.keepCells ?? []);
@@ -1763,14 +1763,18 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
         for (let c = 0; c < a.cols; c++) {
           const k = cellKey(r, c);
           if (missing.has(k)) continue; // 欠け＝パネル無し
-          const counted = before
-            ? marked // 改修前＝既設配列の満数
-            : removed.has(k)
-            ? false
-            : hasKeep
-            ? keep.has(k)
-            : true; // 改修後＝撤去を除く（既設は流用、新設は全数）
-          if (counted) bump(a.cellPanels?.[k] ?? a.panelId, kind, orient);
+          const model = a.cellPanels?.[k] ?? a.panelId;
+          if (before) {
+            if (marked) bump(model, "既設", orient); // 改修前＝既設配列の満数
+            continue;
+          }
+          // 改修後：既設配列は 撤去/流用 に分ける。新設配列は撤去を除いた全数。
+          if (marked) {
+            if (removed.has(k)) bump(model, "撤去", orient);
+            else if (hasKeep ? keep.has(k) : true) bump(model, "既設", orient); // 流用
+          } else {
+            if (!removed.has(k)) bump(model, "新設", orient);
+          }
         }
       }
     }
@@ -1779,12 +1783,13 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
         bump(f.panelId, "新設", f.orientation === "portrait" ? "縦" : "横"); // 単独パネル＝新設
       }
     }
+    const colorOf = (k: Kind) => (k === "既設" ? KEEP_COLOR : k === "撤去" ? "#f43f5e" : "#38bdf8");
+    const order: Record<Kind, number> = { 既設: 0, 撤去: 1, 新設: 2 }; // 残す→外す→足す
     return [...map.values()]
       .filter((v) => v.count > 0)
-      // 既設→新設、その中は枚数の多い順
-      .sort((x, y) => (x.kind === y.kind ? y.count - x.count : x.kind === "既設" ? -1 : 1))
+      .sort((x, y) => (x.kind === y.kind ? y.count - x.count : order[x.kind] - order[y.kind]))
       .map((v) => ({
-        color: v.kind === "既設" ? KEEP_COLOR : "#38bdf8",
+        color: colorOf(v.kind),
         kind: v.kind,
         model: v.name,
         w: v.w,
@@ -1888,26 +1893,8 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     const breakdownAfterHtml = breakdownTable("改修後（改修案）", summarizePanelLegend(false));
     const today = new Date().toISOString().slice(0, 10);
 
-    const w = window.open("", "_blank");
-    if (!w) {
-      alert("ポップアップがブロックされました。許可してから再実行してください。");
-      return;
-    }
-    w.document.write(
-      `<!DOCTYPE html><html><head><meta charset="utf-8"><title>工事説明書</title>
-<style>
-@page{size:A4 landscape;margin:10mm}
-body{font-family:sans-serif;color:#0b1220;margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
-.page{page-break-after:always;padding:6mm}
-.page:last-child{page-break-after:auto}
-h1{font-size:20px;margin:0 0 6px} h2{font-size:15px;border-bottom:2px solid #0b1220;padding-bottom:3px}
-img{display:block;max-width:100%;max-height:160mm;width:auto;height:auto;border:1px solid #cbd5e1;margin:6px auto 0}
-table{border-collapse:collapse;width:100%;font-size:12px;margin-top:6px}
-th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align:left}
-.meta{font-size:13px} .meta td{border:none;padding:2px 8px 2px 0}
-.lg{font-size:11px;margin-top:6px}
-</style></head><body>
-
+    // 各ページのHTML（A4横＝1123×794px相当で組み、html2canvasで画像化してjsPDFに貼る）。
+    const pagesHtml = `
 <div class="page">
   <h1>太陽光発電設備 改修工事説明書</h1>
   <table class="meta">
@@ -1929,7 +1916,7 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
 </div>
 
 <div class="page">
-  <h2>型式別内訳（<span style="color:#22c55e">■</span>緑＝既設／流用　<span style="color:#38bdf8">■</span>青＝新設）</h2>
+  <h2>型式別内訳（<span style="color:#22c55e">■</span>緑＝既設／流用　<span style="color:#f43f5e">■</span>赤＝撤去（外す）　<span style="color:#38bdf8">■</span>青＝新設）</h2>
   ${breakdownBeforeHtml}
   ${breakdownAfterHtml}
 </div>
@@ -1958,12 +1945,53 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
     ${pcsRows || '<tr><td colspan="5">パワコン構成が未設定です。</td></tr>'}
     <tr><th colspan="3">合計</th><th style="text-align:right">${totalAc.toFixed(2)}</th><th>${no} 台</th></tr>
   </table>
-</div>
+</div>`;
 
-<script>window.onload=function(){setTimeout(function(){window.print();},400);};</script>
-</body></html>`
-    );
-    w.document.close();
+    // スタイルは #pdf-export-host 配下に限定（アプリ本体の見た目に影響させない）。
+    const styleCss = `
+#pdf-export-host{position:fixed;left:-10000px;top:0;width:1123px;background:#fff}
+#pdf-export-host .page{width:1123px;min-height:794px;box-sizing:border-box;padding:34px;background:#fff;color:#0b1220;font-family:sans-serif}
+#pdf-export-host h1{font-size:30px;margin:0 0 12px}
+#pdf-export-host h2{font-size:21px;border-bottom:2px solid #0b1220;padding-bottom:5px;margin:0 0 4px}
+#pdf-export-host img{display:block;max-width:100%;max-height:600px;width:auto;height:auto;border:1px solid #cbd5e1;margin:12px auto 0}
+#pdf-export-host table{border-collapse:collapse;width:100%;font-size:17px;margin-top:10px}
+#pdf-export-host th,#pdf-export-host td{border:1px solid #cbd5e1;padding:6px 10px}
+#pdf-export-host th{background:#f1f5f9;text-align:left}
+#pdf-export-host .meta{font-size:19px} #pdf-export-host .meta td{border:none;padding:3px 12px 3px 0}
+#pdf-export-host .lg{font-size:16px;margin-top:12px;line-height:1.7}`;
+
+    const host = document.createElement("div");
+    host.id = "pdf-export-host";
+    host.innerHTML = `<style>${styleCss}</style>${pagesHtml}`;
+    document.body.appendChild(host);
+    try {
+      flashMsg("📄 PDFを作成中…");
+      // jsPDF / html2canvas は重いので、PDF出力を押したときだけ読み込む（初期表示を軽く保つ）。
+      const [{ default: jsPDF }, { default: html2canvas }] = await Promise.all([
+        import("jspdf"),
+        import("html2canvas"),
+      ]);
+      const doc = new jsPDF({ orientation: "landscape", unit: "mm", format: "a4" });
+      const PW = 297, PH = 210, M = 8; // A4横・余白
+      const pageEls = Array.from(host.querySelectorAll<HTMLElement>(".page"));
+      for (let i = 0; i < pageEls.length; i++) {
+        const canvas = await html2canvas(pageEls[i], { scale: 2, backgroundColor: "#ffffff", useCORS: true });
+        const imgData = canvas.toDataURL("image/jpeg", 0.92);
+        // ページ画像を余白内に収まるよう縮尺（縦横比維持）・上寄せ中央。
+        const scale = Math.min((PW - M * 2) / canvas.width, (PH - M * 2) / canvas.height);
+        const drawW = canvas.width * scale, drawH = canvas.height * scale;
+        if (i > 0) doc.addPage();
+        doc.addImage(imgData, "JPEG", (PW - drawW) / 2, M, drawW, drawH);
+      }
+      const safeName = (plantName ?? "発電所").replace(/[\\/:*?"<>|]/g, "_");
+      doc.save(`工事説明書_${safeName}_${today}.pdf`);
+      flashMsg("✅ PDFを保存しました（ダウンロード）");
+    } catch (e) {
+      console.error(e);
+      alert("PDFの作成に失敗しました。もう一度お試しください。");
+    } finally {
+      document.body.removeChild(host);
+    }
   }
 
   function addArray() {
