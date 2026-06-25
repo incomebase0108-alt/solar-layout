@@ -147,6 +147,7 @@ export default function App() {
           defaultAddress={current.address}
           pcsUnits={current.pcsUnits}
           pcsList={pcsStore.pcsList}
+          conditions={condStore.conditions}
           plantName={current.name}
           customerName={current.customerName}
           hasCandidates={(current.candidates?.length ?? 0) > 0}

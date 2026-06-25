@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import type { PanelSpec, LayoutProject, PanelArray, ShadowZone, FreePanel, LegendItem, PcsUnitLine, PcsSpec } from "../types";
-import { cellKey, arrayGaps } from "../types";
+import type { PanelSpec, LayoutProject, PanelArray, ShadowZone, FreePanel, LegendItem, PcsUnitLine, PcsSpec, DesignConditions } from "../types";
+import { cellKey, arrayGaps, DEFAULT_CONDITIONS } from "../types";
 import { shadedCellKeys, pointInZones } from "../calc/shadow";
 import { summarizeLayout, arrayCellStats } from "../calc/layoutCount";
 import { assignWiring, type WiringAssignResult } from "../calc/wiringAssign";
+import { calcStringSizing } from "../calc/stringSizing";
 import { fileToScaledDataUrl } from "../utils/image";
 import { geocodeAddress, buildSeamlessPhoto, calibrationFromScale } from "../utils/gsiMap";
 import { uid } from "../store";
@@ -23,6 +24,8 @@ interface Props {
   pcsUnits?: PcsUnitLine[];
   /** パワコンマスタ（工事説明書のパワコン構成表に使用） */
   pcsList?: PcsSpec[];
+  /** 設計条件（温度）。工事説明書の電圧電流・エラー判定に使用。 */
+  conditions?: DesignConditions;
   /** 発電所名（工事説明書の表紙に使用） */
   plantName?: string;
   /** 顧客名（工事説明書の表紙に使用） */
@@ -80,7 +83,7 @@ function allCellKeys(rows: number, cols: number): string[] {
   return keys;
 }
 
-export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaultAddress, pcsUnits, pcsList, plantName, customerName, candidateBar, hasCandidates, candidateCount, clearCandidates }: Props) {
+export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaultAddress, pcsUnits, pcsList, conditions, plantName, customerName, candidateBar, hasCandidates, candidateCount, clearCandidates }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgReady, setImgReady] = useState(false);
@@ -1882,10 +1885,11 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     const fmt = (n: number) => n.toLocaleString();
     const kw = (n: number) => n.toFixed(1);
 
-    // パワコン構成表
+    // パワコン構成表（④ 一覧＝listRows ／ ⑤ ストリング明細＝pcsRows）
     const units = pcsUnits ?? [];
-    let pcsRows = "";
-    let totalAc = 0;
+    let pcsRows = "";   // ⑤ ストリング明細
+    let listRows = "";  // ④ パワコン別一覧
+    let totalAc = 0, totalDc = 0, totalCells = 0;
     let no = 0;
     // 既設流用／新設の区分別集計（工事概要で内訳を出すため）
     let exAc = 0, exNo = 0, newAc = 0, newNo = 0;
@@ -1895,20 +1899,84 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
       // 実効区分：台の上書き ＞ 機種マスタ ＞ 既定（新設）。PcsComposer と同じ解決順。
       const kind = u.kind ?? pcs?.kind ?? "new";
       const kindLabel = kind === "existing" ? "既設" : "新設";
+      const pcsName = pcs ? `${pcs.maker} ${pcs.model}${pcs.warranty ? `（${pcs.warranty}）` : ""}` : "—";
+      // 1台あたりの DC・枚数・過積載率（PcsComposer と同じ計算）。strings は台で共通。
+      let unitCells = 0, unitDcW = 0;
+      for (const s of u.strings ?? []) {
+        const pn = panels.find((p) => p.id === s.panelId);
+        const cells = Math.max(0, s.series) * Math.max(1, s.parallel);
+        unitCells += cells;
+        unitDcW += cells * (pn?.pmaxW ?? 0);
+      }
+      const unitDcKw = unitDcW / 1000;
+      const overload = ac > 0 ? (unitDcKw / ac) * 100 : 0;
+      const ovCell = ac > 0 ? `${overload.toFixed(0)}%` : "—";
+      const ovStyle = `text-align:right${overload > 130 ? ";color:#dc2626;font-weight:bold" : ""}`;
+      // ストリング明細：並列は1本ずつ別行に展開（1行＝1ストリング＝MPPTの1入力）。
+      // 同じ高さで 電圧／電流／判定 の列を横並びに作る（行数を一致させて揃える）。
+      // esc 済みを <br> 連結するので、セル側では esc を二重がけしない。
+      const cond = conditions ?? DEFAULT_CONDITIONS;
+      const strLines: string[] = [];
+      const veLines: string[] = []; // 電圧（開放=低温Voc合計 / 動作=高温Vmp合計）
+      const ampLines: string[] = []; // 電流（ストリングのIsc）
+      const judgeLines: string[] = []; // 判定（電流電圧エラー or OK）
+      for (const s of u.strings ?? []) {
+        const pn = panels.find((p) => p.id === s.panelId);
+        const par = Math.max(1, s.parallel);
+        const ser = Math.max(0, s.series);
+        const isc = pn?.iscA ?? 0;
+        let vocLow = 0, vmpHigh = 0;
+        const errs: string[] = [];
+        if (pn && pcs) {
+          // PcsComposer と同じ判定（温度補正込みのストリング電圧・並列電流）。
+          const sz = calcStringSizing(pn, pcs, cond);
+          vocLow = sz.detail.vocLowTemp;
+          vmpHigh = sz.detail.vmpHighTemp;
+          if (ser > sz.seriesMaxByVoltage)
+            errs.push(`電圧超過：低温Voc合計 ${(vocLow * ser).toFixed(0)}V ＞ 最大入力 ${pcs.maxInputVoltageV}V`);
+          if (ser < sz.seriesMinByMppt)
+            errs.push(`電圧不足：高温Vmp合計 ${(vmpHigh * ser).toFixed(0)}V ＜ MPPT下限 ${pcs.mpptVoltageMinV}V`);
+          if (par > sz.parallelMaxPerMppt)
+            errs.push(`電流超過：並列${par}×Isc ${isc}A ＝ ${(isc * par).toFixed(1)}A ＞ 入力上限 ${pcs.maxInputCurrentPerMpptA}A`);
+        }
+        const veCell = esc(
+          [vocLow > 0 ? `開放 ${(vocLow * ser).toFixed(0)}V` : "—", vmpHigh > 0 ? `動作 ${(vmpHigh * ser).toFixed(0)}V` : ""]
+            .filter(Boolean)
+            .join(" / ")
+        );
+        const ampCell = isc > 0 ? esc(`${isc.toFixed(1)}A`) : "—";
+        const judgeCell = errs.length
+          ? `<span style="color:#dc2626">⛔ ${esc(errs.join(" ／ "))}</span>`
+          : `<span style="color:#16a34a">OK</span>`;
+        const label = esc(`${pn ? pn.model : "—"}×${ser}直`);
+        for (let b = 0; b < par; b++) {
+          strLines.push(label);
+          veLines.push(veCell);
+          ampLines.push(ampCell);
+          judgeLines.push(judgeCell);
+        }
+      }
+      const str = strLines.join("<br>");
+      const veCol = veLines.join("<br>") || "—";
+      const ampCol = ampLines.join("<br>") || "—";
+      const judgeCol = judgeLines.join("<br>") || "—";
+      // 機種セル：型式＋電流電圧の入力上限（パワコンの制約）。
+      const pcsCell = pcs
+        ? `<strong>${esc(pcsName)}</strong><br><small style="color:#64748b">${esc(
+            `入力上限 ${pcs.maxInputVoltageV}V ／ MPPT ${pcs.mpptVoltageMinV}–${pcs.mpptVoltageMaxV}V ／ ${pcs.maxInputCurrentPerMpptA}A·MPPT`
+          )}</small>`
+        : "—";
       for (let i = 0; i < u.count; i++) {
         no++;
         totalAc += ac;
+        totalDc += unitDcKw;
+        totalCells += unitCells;
         if (kind === "existing") { exNo++; exAc += ac; } else { newNo++; newAc += ac; }
-        const str = (u.strings ?? [])
-          .map((s) => {
-            const pn = panels.find((p) => p.id === s.panelId);
-            return `${pn ? pn.model : "—"}×${s.series}直${s.parallel > 1 ? `×${s.parallel}並` : ""}`;
-          })
-          .join("、");
-        const pcsName = pcs ? `${pcs.maker} ${pcs.model}${pcs.warranty ? `（${pcs.warranty}）` : ""}` : "—";
-        pcsRows += `<tr><td>#${no}</td><td>${kindLabel}</td><td>${esc(pcsName)}</td><td style="text-align:right">${ac.toFixed(2)}</td><td>${esc(str)}</td></tr>`;
+        listRows += `<tr><td>#${no}</td><td>${kindLabel}</td><td>${esc(pcsName)}</td><td style="text-align:right">${ac.toFixed(2)}</td><td style="text-align:right">${unitDcKw.toFixed(2)}</td><td style="text-align:right">${unitCells}</td><td style="${ovStyle}">${ovCell}</td><td>${esc(u.note ?? "")}</td></tr>`;
+        pcsRows += `<tr><td>#${no}</td><td>${kindLabel}</td><td>${pcsCell}</td><td>${str}</td><td>${veCol}</td><td style="text-align:right">${ampCol}</td><td>${judgeCol}</td></tr>`;
       }
     }
+    const totalOverload = totalAc > 0 ? (totalDc / totalAc) * 100 : 0;
     const baseRow = base
       ? `<tr><td>現状（改修前）</td><td style="text-align:right">${fmt(base.totalPanels)}</td><td style="text-align:right">${kw(base.totalKw)}</td></tr>`
       : "";
@@ -1992,12 +2060,22 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
 </div>
 
 <div class="page">
-  <h2>④ パワコン構成</h2>
+  <h2>④ パワコン別一覧（全 ${no} 台）</h2>
   <table>
-    <tr><th>#</th><th>区分</th><th>機種</th><th style="text-align:right">AC(kW)</th><th>ストリング</th></tr>
-    ${pcsRows || '<tr><td colspan="5">パワコン構成が未設定です。</td></tr>'}
-    <tr><th colspan="3">合計</th><th style="text-align:right">${totalAc.toFixed(2)}</th><th>${no} 台</th></tr>
+    <tr><th>#</th><th>区分</th><th>機種</th><th style="text-align:right">AC(kW)</th><th style="text-align:right">DC(kW)</th><th style="text-align:right">枚数</th><th style="text-align:right">過積載率</th><th>メモ</th></tr>
+    ${listRows || '<tr><td colspan="8">パワコン構成が未設定です。</td></tr>'}
+    <tr><th colspan="3">合計 ${no} 台</th><th style="text-align:right">${totalAc.toFixed(2)}</th><th style="text-align:right">${totalDc.toFixed(2)}</th><th style="text-align:right">${fmt(totalCells)}</th><th style="text-align:right">${totalAc > 0 ? totalOverload.toFixed(0) : "—"}%</th><th></th></tr>
   </table>
+  <div class="lg">使用 ${fmt(totalCells)} 枚 ／ 過積載率＝DC÷AC（パネル合計DC ÷ パワコン定格AC）。<span style="color:#dc2626">130%超は過積載が大きめ</span>。区分＝既設（流用）／新設。</div>
+</div>
+
+<div class="page">
+  <h2>⑤ パワコン構成（ストリング明細・電圧電流・判定）</h2>
+  <table style="font-size:13px">
+    <tr><th>#</th><th>区分</th><th>機種・入力上限</th><th>ストリング</th><th>電圧（開放=低温Voc／動作=高温Vmp）</th><th style="text-align:right">電流(Isc)</th><th>判定</th></tr>
+    ${pcsRows || '<tr><td colspan="7">パワコン構成が未設定です。</td></tr>'}
+  </table>
+  <div class="lg" style="font-size:13px">機種欄＝パワコンの電流電圧の上限。明細欄＝各ストリングの電圧（直列数×温度補正電圧）と電流（Isc）。<span style="color:#dc2626">⛔＝上限超過/下限割れ</span>（直列数・並列数の見直しが必要）、<span style="color:#16a34a">OK＝範囲内</span>。</div>
 </div>`;
 
     // スタイルは #pdf-export-host 配下に限定（アプリ本体の見た目に影響させない）。
@@ -2008,7 +2086,7 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
 #pdf-export-host h2{font-size:21px;border-bottom:2px solid #0b1220;padding-bottom:5px;margin:0 0 4px}
 #pdf-export-host img{display:block;max-width:100%;max-height:600px;width:auto;height:auto;border:1px solid #cbd5e1;margin:12px auto 0}
 #pdf-export-host table{border-collapse:collapse;width:100%;font-size:17px;margin-top:10px}
-#pdf-export-host th,#pdf-export-host td{border:1px solid #cbd5e1;padding:6px 10px}
+#pdf-export-host th,#pdf-export-host td{border:1px solid #cbd5e1;padding:6px 10px;vertical-align:top}
 #pdf-export-host th{background:#f1f5f9;text-align:left}
 #pdf-export-host .meta{font-size:19px} #pdf-export-host .meta td{border:none;padding:3px 12px 3px 0}
 #pdf-export-host .lg{font-size:16px;margin-top:12px;line-height:1.7}`;
