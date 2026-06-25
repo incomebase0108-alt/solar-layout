@@ -1725,61 +1725,74 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
   }
 
   /**
-   * 工事説明書PDFの凡例用：パネル型式ごとに「既設(緑)／新設(青)」の枚数を実データから集計する。
-   * before=true（改修前ページ用）は既設配列を「満数(grid)」で数える（改修前の図面が満数表示なのに一致）。
+   * 工事説明書PDFの凡例用：パネル型式×区分(既設緑/新設青)ごとの枚数を実データから集計する。
+   * before=true（改修前ページ用）は既設配列を「満数」で数える（改修前の図面が満数表示なのに一致）。
    * before=false（改修後ページ用）は既設＝流用(keep)、新設＝撤去後の全数＋単独パネル。
-   * 数え方は arrayCountByMode の genkyo/kaishu と同じ思想。手入力の layout.legend ではなく実態を出す。
+   * cellPanels（1配列内の型式混在）に対応するため、summarizeLayout と同じくセル単位で数える
+   * （配列の代表型式だけで数えると、混在した2型式目が欠落する）。
    */
   function summarizePanelLegend(
     before: boolean
   ): { color: string; kind: "既設" | "新設"; model: string; w: number; orient: string; count: number; kw: number; label: string }[] {
-    const map = new Map<string, { existing: number; added: number; orient: string; name: string; w: number }>();
-    const touch = (panelId: string, orient: string) => {
+    // key = `${panelId}|${kind}`（同じ型式でも既設/新設を別行に）
+    const map = new Map<string, { kind: "既設" | "新設"; name: string; w: number; orient: string; count: number }>();
+    const bump = (panelId: string, kind: "既設" | "新設", orient: string) => {
       const p = panels.find((x) => x.id === panelId);
+      const k = `${panelId}|${kind}`;
       const cur =
-        map.get(panelId) ?? {
-          existing: 0,
-          added: 0,
-          orient,
+        map.get(k) ?? {
+          kind,
           name: `${p?.maker ?? ""} ${p?.model ?? ""}`.trim() || "未登録パネル",
           w: p?.pmaxW ?? 0,
+          orient,
+          count: 0,
         };
-      map.set(panelId, cur);
-      return cur;
+      cur.count++;
+      map.set(k, cur);
     };
     for (const a of layout.arrays) {
-      const s = arrayCellStats(a);
-      const cur = touch(a.panelId, a.orientation === "portrait" ? "縦" : "横");
-      if (s.marked) {
-        // 既設配列：改修前は満数、改修後は流用枚数
-        cur.existing += before ? s.grid : s.keep;
-      } else if (!before) {
-        // 新設配列（改修前ページには出さない）
-        cur.added += s.grid - s.removed;
+      const marked = a.keepCells !== undefined; // 既設配列＝true／新設配列＝false
+      const kind: "既設" | "新設" = marked ? "既設" : "新設";
+      if (before && !marked) continue; // 改修前は新設配列を出さない
+      const missing = new Set(a.missingCells ?? []);
+      const keep = new Set(a.keepCells ?? []);
+      const removed = new Set(a.removedCells ?? []);
+      const hasKeep = keep.size > 0;
+      const orient = a.orientation === "portrait" ? "縦" : "横";
+      for (let r = 0; r < a.rows; r++) {
+        for (let c = 0; c < a.cols; c++) {
+          const k = cellKey(r, c);
+          if (missing.has(k)) continue; // 欠け＝パネル無し
+          const counted = before
+            ? marked // 改修前＝既設配列の満数
+            : removed.has(k)
+            ? false
+            : hasKeep
+            ? keep.has(k)
+            : true; // 改修後＝撤去を除く（既設は流用、新設は全数）
+          if (counted) bump(a.cellPanels?.[k] ?? a.panelId, kind, orient);
+        }
       }
     }
     if (!before) {
       for (const f of layout.freePanels ?? []) {
-        const cur = touch(f.panelId, f.orientation === "portrait" ? "縦" : "横");
-        cur.added++; // 単独パネル＝新設扱い
+        bump(f.panelId, "新設", f.orientation === "portrait" ? "縦" : "横"); // 単独パネル＝新設
       }
     }
-    const items: { color: string; kind: "既設" | "新設"; model: string; w: number; orient: string; count: number; kw: number; label: string }[] = [];
-    for (const v of map.values()) {
-      if (v.existing > 0)
-        items.push({
-          color: KEEP_COLOR, kind: "既設", model: v.name, w: v.w, orient: v.orient,
-          count: v.existing, kw: (v.existing * v.w) / 1000,
-          label: `${v.name} ${v.w}W 既設 ${v.existing}枚 ${v.orient}`,
-        });
-      if (v.added > 0)
-        items.push({
-          color: "#38bdf8", kind: "新設", model: v.name, w: v.w, orient: v.orient,
-          count: v.added, kw: (v.added * v.w) / 1000,
-          label: `${v.name} ${v.w}W 新設 ${v.added}枚 ${v.orient}`,
-        });
-    }
-    return items;
+    return [...map.values()]
+      .filter((v) => v.count > 0)
+      // 既設→新設、その中は枚数の多い順
+      .sort((x, y) => (x.kind === y.kind ? y.count - x.count : x.kind === "既設" ? -1 : 1))
+      .map((v) => ({
+        color: v.kind === "既設" ? KEEP_COLOR : "#38bdf8",
+        kind: v.kind,
+        model: v.name,
+        w: v.w,
+        orient: v.orient,
+        count: v.count,
+        kw: (v.count * v.w) / 1000,
+        label: `${v.name} ${v.w}W ${v.kind} ${v.count}枚 ${v.orient}`,
+      }));
   }
 
   /** 工事説明書PDF：表紙＋改修前(既設のみ)＋改修後(レイアウト)＋配線図(結線)＋パワコン構成 を1つの印刷用に出す。 */
