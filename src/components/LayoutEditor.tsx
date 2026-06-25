@@ -1844,17 +1844,35 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     const afterRow = `<tr><td>完成後（改修案）</td><td style="text-align:right">${fmt(after.totalPanels)}</td><td style="text-align:right">${kw(after.totalKw)}</td></tr>`;
     // 凡例は実データから自動生成（手入力の layout.legend ではなく実態）。
     // 改修前ページは既設のみ（満数）、改修後ページは既設(流用)＋新設。
+    // ■は「文字色」で描く（背景色は Chrome 印刷の既定で出力されないため、確実に色を出す）。
     const lgHtml = (items: { color: string; label: string }[]) =>
       items.length
         ? items
             .map(
               (l) =>
-                `<span style="display:inline-flex;align-items:center;margin:0 10px 4px 0"><span style="width:11px;height:11px;background:${l.color};border-radius:2px;margin-right:4px"></span>${esc(l.label)}</span>`
+                `<span style="margin:0 12px 4px 0;white-space:nowrap"><span style="color:${l.color};font-size:15px">■</span> ${esc(l.label)}</span>`
             )
             .join("")
         : `<span style="color:#64748b">パネル未配置</span>`;
     const legendBeforeHtml = lgHtml(summarizePanelLegend(true));
     const legendAfterHtml = lgHtml(summarizePanelLegend(false));
+    // 型式別内訳（色付き）：画面の前後比較と同じ色分け（緑＝既設/流用・青＝新設）。
+    const breakdownTable = (title: string, items: ReturnType<typeof summarizePanelLegend>) =>
+      `<table style="margin-top:8px">
+    <tr><th colspan="2">${esc(title)}</th><th style="text-align:right">枚数</th><th style="text-align:right">出力(kW)</th></tr>
+    ${
+      items.length
+        ? items
+            .map(
+              (it) =>
+                `<tr><td style="width:16px;text-align:center;color:${it.color};font-size:15px">■</td><td>${esc(it.model)} ${it.w}W <b>${it.kind}</b></td><td style="text-align:right">${fmt(it.count)} 枚</td><td style="text-align:right">${kw(it.kw)}</td></tr>`
+            )
+            .join("")
+        : `<tr><td colspan="4">パネル未配置</td></tr>`
+    }
+  </table>`;
+    const breakdownBeforeHtml = breakdownTable("改修前（既設のみ）", summarizePanelLegend(true));
+    const breakdownAfterHtml = breakdownTable("改修後（改修案）", summarizePanelLegend(false));
     const today = new Date().toISOString().slice(0, 10);
 
     const w = window.open("", "_blank");
@@ -1866,7 +1884,7 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
       `<!DOCTYPE html><html><head><meta charset="utf-8"><title>工事説明書</title>
 <style>
 @page{size:A4 landscape;margin:10mm}
-body{font-family:sans-serif;color:#0b1220;margin:0}
+body{font-family:sans-serif;color:#0b1220;margin:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}
 .page{page-break-after:always;padding:6mm}
 .page:last-child{page-break-after:auto}
 h1{font-size:20px;margin:0 0 6px} h2{font-size:15px;border-bottom:2px solid #0b1220;padding-bottom:3px}
@@ -1895,6 +1913,12 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
     ${newNo ? `<tr><td>新設パワコン</td><td style="text-align:right">${newAc.toFixed(2)}</td><td style="text-align:right">${newNo} 台</td></tr>` : ""}
     ${no === 0 ? `<tr><td>パワコン</td><td style="text-align:right">0.00</td><td style="text-align:right">0 台</td></tr>` : ""}
   </table>
+</div>
+
+<div class="page">
+  <h2>型式別内訳（<span style="color:#22c55e">■</span>緑＝既設／流用　<span style="color:#38bdf8">■</span>青＝新設）</h2>
+  ${breakdownBeforeHtml}
+  ${breakdownAfterHtml}
 </div>
 
 <div class="page">
