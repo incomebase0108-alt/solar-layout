@@ -414,7 +414,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
   );
 
   // --- 描画 ---
-  const draw = useCallback((wiringOverride?: WiringAssignResult | null) => {
+  const draw = useCallback((wiringOverride?: WiringAssignResult | null, phaseOverride?: "kisetsu" | "henkou") => {
     const c = canvasRef.current;
     if (!c) return;
     const ctx = c.getContext("2d");
@@ -422,6 +422,10 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
     // 通常は state 由来の wiring を描く。PDF出力など、特定の結線状態を
     // React の再描画を待たずに同期で描きたいときは引数で渡す。
     const wv = wiringOverride !== undefined ? wiringOverride : wiring;
+    // 同様にフェーズも引数で上書きできる。工事説明書PDFは「改修前(kisetsu)」
+    // と「改修後(henkou)」を1回の出力内で同期描画するため、React の phase
+    // 再描画を待たずに描き分ける必要がある。
+    const phv = phaseOverride !== undefined ? phaseOverride : phase;
 
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, c.width, c.height);
@@ -445,7 +449,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
     for (const arr of layout.arrays) {
       // ①既設の設定は「改修前の既設だけ」を表示する：
       // ②で追加した新設配列は描かず、撤去・入換マークも無視して既設の満数で描く（汚染防止）
-      if (phase === "kisetsu" && arr.keepCells === undefined) continue;
+      if (phv === "kisetsu" && arr.keepCells === undefined) continue;
       const dims = arrayPanelPx(arr);
       const { pw, ph, gapXpx, gapYpx } = dims;
       ctx.save();
@@ -473,7 +477,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
             continue;
           }
           // 撤去セルは赤系の塗り＋×印で「撤去」と一目で分かるようにする（②のみ。①は既設満数で表示）
-          if (phase === "henkou" && removed.has(cellKey(r, col))) {
+          if (phv === "henkou" && removed.has(cellKey(r, col))) {
             ctx.fillStyle = "rgba(244,63,94,0.30)"; // 赤の半透明
             ctx.fillRect(x, y, pw, ph);
             ctx.strokeStyle = "#f43f5e";
@@ -542,7 +546,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
             continue;
           }
           // 流用＝緑は②変更の検討でのみ表示（①は既設づくり中で全数流用のため色分け不要）
-          const isKeep = phase === "henkou" && keep.has(cellKey(r, col));
+          const isKeep = phv === "henkou" && keep.has(cellKey(r, col));
           ctx.fillStyle = (isKeep ? KEEP_COLOR : arrayDispColor(arr.color)) + (isKeep ? "66" : "44");
           ctx.strokeStyle = isKeep ? KEEP_COLOR : selected ? "#fff" : arrayDispColor(arr.color);
           ctx.lineWidth = (isKeep ? 1.5 : selected ? 2 : 1) / view.zoom;
@@ -595,7 +599,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
     }
 
     // 単独パネル（新設扱いのため①既設の設定では表示しない）
-    for (const fp of phase === "henkou" ? layout.freePanels ?? [] : []) {
+    for (const fp of phv === "henkou" ? layout.freePanels ?? [] : []) {
       const { pw, ph } = freePanelPx(fp);
       ctx.save();
       ctx.translate(fp.posXpx, fp.posYpx);
@@ -1720,7 +1724,65 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     setWiringOverrides({});
   }
 
-  /** 工事説明書PDF：表紙＋現在の図面＋完成後(結線図)＋パワコン構成 を1つの印刷用に出す。 */
+  /**
+   * 工事説明書PDFの凡例用：パネル型式ごとに「既設(緑)／新設(青)」の枚数を実データから集計する。
+   * before=true（改修前ページ用）は既設配列を「満数(grid)」で数える（改修前の図面が満数表示なのに一致）。
+   * before=false（改修後ページ用）は既設＝流用(keep)、新設＝撤去後の全数＋単独パネル。
+   * 数え方は arrayCountByMode の genkyo/kaishu と同じ思想。手入力の layout.legend ではなく実態を出す。
+   */
+  function summarizePanelLegend(
+    before: boolean
+  ): { color: string; kind: "既設" | "新設"; model: string; w: number; orient: string; count: number; kw: number; label: string }[] {
+    const map = new Map<string, { existing: number; added: number; orient: string; name: string; w: number }>();
+    const touch = (panelId: string, orient: string) => {
+      const p = panels.find((x) => x.id === panelId);
+      const cur =
+        map.get(panelId) ?? {
+          existing: 0,
+          added: 0,
+          orient,
+          name: `${p?.maker ?? ""} ${p?.model ?? ""}`.trim() || "未登録パネル",
+          w: p?.pmaxW ?? 0,
+        };
+      map.set(panelId, cur);
+      return cur;
+    };
+    for (const a of layout.arrays) {
+      const s = arrayCellStats(a);
+      const cur = touch(a.panelId, a.orientation === "portrait" ? "縦" : "横");
+      if (s.marked) {
+        // 既設配列：改修前は満数、改修後は流用枚数
+        cur.existing += before ? s.grid : s.keep;
+      } else if (!before) {
+        // 新設配列（改修前ページには出さない）
+        cur.added += s.grid - s.removed;
+      }
+    }
+    if (!before) {
+      for (const f of layout.freePanels ?? []) {
+        const cur = touch(f.panelId, f.orientation === "portrait" ? "縦" : "横");
+        cur.added++; // 単独パネル＝新設扱い
+      }
+    }
+    const items: { color: string; kind: "既設" | "新設"; model: string; w: number; orient: string; count: number; kw: number; label: string }[] = [];
+    for (const v of map.values()) {
+      if (v.existing > 0)
+        items.push({
+          color: KEEP_COLOR, kind: "既設", model: v.name, w: v.w, orient: v.orient,
+          count: v.existing, kw: (v.existing * v.w) / 1000,
+          label: `${v.name} ${v.w}W 既設 ${v.existing}枚 ${v.orient}`,
+        });
+      if (v.added > 0)
+        items.push({
+          color: "#38bdf8", kind: "新設", model: v.name, w: v.w, orient: v.orient,
+          count: v.added, kw: (v.added * v.w) / 1000,
+          label: `${v.name} ${v.w}W 新設 ${v.added}枚 ${v.orient}`,
+        });
+    }
+    return items;
+  }
+
+  /** 工事説明書PDF：表紙＋改修前(既設のみ)＋改修後(レイアウト)＋配線図(結線)＋パワコン構成 を1つの印刷用に出す。 */
   async function exportConstructionPdf() {
     const c = canvasRef.current;
     if (!c) {
@@ -1729,13 +1791,17 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     }
     const esc = (s: string) =>
       s.replace(/[&<>"]/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[m]!));
-    // 結線オフ／オンの両方を、React の再描画を待たずにキャンバスへ同期で描いて取り込む。
-    // （以前は setWireMode → 固定 sleep に頼っていたため、描画が間に合わず古い状態を
-    //   toDataURL してしまうレースがあった。draw に結線状態を直接渡して確実に描く。）
-    draw(null); // 現在の図面（結線なし）
-    const imgLayout = c.toDataURL("image/jpeg", 0.9);
+    // 改修前／改修後／配線図の3状態を、React の再描画を待たずにキャンバスへ同期で
+    // 描いて取り込む。draw は phase も引数で受け取れるので、現在の表示フェーズ
+    // （PDFボタンは②変更の検討にあるため常に henkou）に依存せず確実に描き分ける。
+    // （以前は phase を切り替えず draw を2回呼ぶだけだったため、「改修前」ラベルの
+    //   ページに改修後レイアウトが描かれ、ラベルと中身がずれていた。）
+    draw(null, "kisetsu"); // ① 改修前（既設のみ・満数）
+    const imgBefore = c.toDataURL("image/jpeg", 0.9);
+    draw(null, "henkou"); // ② 改修後レイアウト（結線なし）
+    const imgAfter = c.toDataURL("image/jpeg", 0.9);
     const wiringOn = assignWiring(layout, panels, pcsUnits ?? [], layout.wiringOverrides);
-    draw(wiringOn); // 完成後＝結線図
+    draw(wiringOn, "henkou"); // ③ 配線図（結線・パワコン割付）
     const imgWiring = c.toDataURL("image/jpeg", 0.9);
     draw(); // 画面表示を現在の state に戻す
 
@@ -1776,9 +1842,19 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
       ? `<tr><td>現状（改修前）</td><td style="text-align:right">${fmt(base.totalPanels)}</td><td style="text-align:right">${kw(base.totalKw)}</td></tr>`
       : "";
     const afterRow = `<tr><td>完成後（改修案）</td><td style="text-align:right">${fmt(after.totalPanels)}</td><td style="text-align:right">${kw(after.totalKw)}</td></tr>`;
-    const legendHtml = legend
-      .map((l) => `<span style="display:inline-flex;align-items:center;margin:0 10px 4px 0"><span style="width:11px;height:11px;background:${l.color};border-radius:2px;margin-right:4px"></span>${esc(l.label)}</span>`)
-      .join("");
+    // 凡例は実データから自動生成（手入力の layout.legend ではなく実態）。
+    // 改修前ページは既設のみ（満数）、改修後ページは既設(流用)＋新設。
+    const lgHtml = (items: { color: string; label: string }[]) =>
+      items.length
+        ? items
+            .map(
+              (l) =>
+                `<span style="display:inline-flex;align-items:center;margin:0 10px 4px 0"><span style="width:11px;height:11px;background:${l.color};border-radius:2px;margin-right:4px"></span>${esc(l.label)}</span>`
+            )
+            .join("")
+        : `<span style="color:#64748b">パネル未配置</span>`;
+    const legendBeforeHtml = lgHtml(summarizePanelLegend(true));
+    const legendAfterHtml = lgHtml(summarizePanelLegend(false));
     const today = new Date().toISOString().slice(0, 10);
 
     const w = window.open("", "_blank");
@@ -1822,18 +1898,24 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
 </div>
 
 <div class="page">
-  <h2>① 現在の図面（改修前）</h2>
-  <img src="${imgLayout}"/>
-  <div class="lg">${legendHtml}</div>
+  <h2>① 改修前の図面（既設のみ）</h2>
+  <img src="${imgBefore}"/>
+  <div class="lg">${legendBeforeHtml}</div>
 </div>
 
 <div class="page">
-  <h2>② 完成後の図面（結線図・パワコン割付）</h2>
+  <h2>② 改修後の図面（改修案レイアウト）</h2>
+  <img src="${imgAfter}"/>
+  <div class="lg">${legendAfterHtml}</div>
+</div>
+
+<div class="page">
+  <h2>③ 配線図（結線・パワコン割付）</h2>
   <img src="${imgWiring}"/>
 </div>
 
 <div class="page">
-  <h2>③ パワコン構成</h2>
+  <h2>④ パワコン構成</h2>
   <table>
     <tr><th>#</th><th>区分</th><th>機種</th><th style="text-align:right">AC(kW)</th><th>ストリング</th></tr>
     ${pcsRows || '<tr><td colspan="5">パワコン構成が未設定です。</td></tr>'}
@@ -3119,7 +3201,7 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
               >
                 {wireMode ? "🔌 結線表示：ON" : "🔌 結線図を表示（パワコン割付）"}
               </button>
-              <button className="btn secondary small no-print" onClick={exportConstructionPdf} title="表紙＋現在の図面＋完成後＋パワコン構成をPDFに">
+              <button className="btn secondary small no-print" onClick={exportConstructionPdf} title="表紙＋改修前＋改修後＋配線図＋パワコン構成をPDFに">
                 📄 工事説明書PDF
               </button>
               <button className={`btn small no-print ${showW ? "" : "secondary"}`} onClick={() => setShowW(!showW)} title="パネルにW値を表示">
@@ -3610,6 +3692,14 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
             const base = layout.baseline;
             const fmt = (n: number) => n.toLocaleString();
             const kw = (n: number) => n.toFixed(1);
+            // 図面と対応する色付きの内訳チップ（緑＝既設／流用・青＝新設）。
+            const chip = (color: string, text: string, key: number) => (
+              <span key={key} style={{ display: "inline-flex", alignItems: "center", marginRight: 12, marginBottom: 2 }}>
+                <span style={{ width: 11, height: 11, background: color, borderRadius: 2, marginRight: 4, display: "inline-block" }} />
+                {text}
+              </span>
+            );
+            const afterItems = summarizePanelLegend(false); // 改修後＝既設(流用)＋新設
             return (
               <table className="list" style={{ marginTop: 12 }}>
                 <thead>
@@ -3629,7 +3719,7 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
                     <td className="num">{base ? kw(base.totalKw) : "—"}</td>
                     <td className="hint">
                       {base
-                        ? base.byPanel.map((b) => `${b.model}：${fmt(b.count)}枚(${kw(b.kw)}kW)`).join(" / ")
+                        ? base.byPanel.map((b, i) => chip(KEEP_COLOR, `${b.model} ${fmt(b.count)}枚(${kw(b.kw)}kW)`, i))
                         : "「現状を基準登録」を押すと記録されます"}
                     </td>
                   </tr>
@@ -3638,7 +3728,11 @@ th,td{border:1px solid #cbd5e1;padding:4px 6px} th{background:#f1f5f9;text-align
                     <td className="num">{fmt(cur.totalPanels)}</td>
                     <td className="num">{kw(cur.totalKw)}</td>
                     <td className="hint">
-                      {cur.byPanel.map((b) => `${b.model}：${fmt(b.count)}枚(${kw(b.kw)}kW)`).join(" / ") || "—"}
+                      {afterItems.length
+                        ? afterItems.map((it, i) =>
+                            chip(it.color, `${it.model} ${it.kind} ${fmt(it.count)}枚(${kw(it.kw)}kW)`, i)
+                          )
+                        : "—"}
                     </td>
                   </tr>
                   {base && (
