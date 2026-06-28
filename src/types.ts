@@ -58,8 +58,8 @@ export interface PcsSpec {
   maker: string;
   /** 型番 */
   model: string;
-  /** 既設流用 or 新設 */
-  kind: "existing" | "new";
+  /** （廃止）旧：マスタ側の既設/新設区分。現在は台ごと（PcsUnitLine.kind）で判定するため任意・未使用。 */
+  kind?: "existing" | "new";
 
   // --- AC 側 ---
   /** 定格出力 (kW) */
@@ -112,7 +112,9 @@ export interface DesignConditions {
 }
 
 export const DEFAULT_CONDITIONS: DesignConditions = {
-  minAmbientTempC: -10,
+  // 既定は西尾市（愛知・三河沿岸＝温暖地）基準の設計最低気温 −3℃。
+  // 寒冷地・最悪値を見る場合は「設計条件（温度）」で各自引き下げる。
+  minAmbientTempC: -3,
   maxCellTempC: 70,
 };
 
@@ -321,6 +323,35 @@ export const EMPTY_LAYOUT: LayoutProject = {
 };
 
 /**
+ * 概算コストでユーザーが手入力する値（候補ごとに保存）。
+ * 図面・パワコン構成から自動導出できる枚数/台数は保存せず毎回再計算する。
+ * ここに持つのは「自動導出できない入力」と「自動値の手動上書き」だけ。
+ * 未指定の項目は従来どおり自動導出値／既定値にフォールバックする。
+ */
+export interface CandidateCostInputs {
+  /** 新設パネル枚数の手動上書き（パネルマスタID→枚数）。未指定の型式は図面から自動導出。 */
+  panelCountOverride?: Record<string, number>;
+  /** 撤去パネルのうち「処分」に回す枚数。未指定なら図面の撤去枚数を使う。 */
+  removedDisposal?: number;
+  /** 撤去パネルのうち「在庫」に回す枚数。 */
+  removedStock?: number;
+  /** 新設パワコン台数の手動上書き。未指定なら構成から自動導出。 */
+  newPcsCount?: number;
+  /** 新設パワコン単価（円/台）。 */
+  pcsUnitYen?: number;
+  /** 撤去パワコン台数。 */
+  removedPcsCount?: number;
+  /** その他費用（連系負担金・申請費・値引き・監視装置など）。候補ごと。 */
+  extraCostLines?: ExtraCostLine[];
+  /** FIT買取単価（円/kWh）。費用対効果用。 */
+  fitYen?: number;
+  /** FIT残存年数（年）。 */
+  remainingYears?: number;
+  /** 変更後の年間発電量（kWh/年）。手入力時のみ。 */
+  afterKwh?: number;
+}
+
+/**
  * 変更の検討の「候補」（プラン）。
  * 既設側（航空写真・校正・基準）は発電所で共通とし、
  * 変更内容（配列のマーク・新設・影・結線手編集・凡例）とパワコン構成を候補ごとに持つ。
@@ -340,6 +371,8 @@ export interface PlanCandidate {
   wiringOverrides?: Record<string, WiringOverride>;
   legend?: LegendItem[];
   pcsUnits?: PcsUnitLine[];
+  /** 概算コストの手入力値（候補ごと）。未使用なら未定義＝従来の自動導出/既定値。 */
+  cost?: CandidateCostInputs;
 }
 
 // ============================================================
@@ -428,8 +461,10 @@ export interface PowerPlant {
   candidates?: PlanCandidate[];
   /** アクティブな候補の id */
   currentCandidateId?: string;
-  /** 概算コストの「その他費用」行（任意・発電所ごとに保存） */
+  /** 概算コストの「その他費用」行（任意・発電所ごとに保存。旧データ互換。新規はアクティブ候補の cost.extraCostLines を使う） */
   extraCostLines?: ExtraCostLine[];
+  /** 概算コストの手入力値（アクティブ候補の作業コピー。pcsUnits と同じ運用）。 */
+  activeCost?: CandidateCostInputs;
 }
 
 /**
@@ -461,7 +496,7 @@ export interface PcsUnitLine {
   note?: string;
   /** 1台あたりのストリング構成（任意）。未指定なら台数×ACのみ集計。 */
   strings?: PcsString[];
-  /** この台の新設/既設の上書き。未指定なら機種マスタの kind を継承。 */
+  /** この台の新設/既設。未指定なら新設扱い（概算コストは新設の台だけ計上）。 */
   kind?: "existing" | "new";
 }
 

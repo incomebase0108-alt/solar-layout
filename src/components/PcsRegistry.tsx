@@ -18,7 +18,6 @@ function emptyPcs(): PcsSpec {
     id: uid("pcs"),
     maker: "",
     model: "",
-    kind: "new",
     ratedPowerKw: 0,
     mpptCount: 1,
     multiMppt: true,
@@ -131,18 +130,6 @@ export function PcsRegistry({ store, plants }: Props) {
             <input value={draft.model} onChange={str("model")} />
           </div>
           <div className="field">
-            <label>区分</label>
-            <select
-              value={draft.kind}
-              onChange={(e) =>
-                setDraft((d) => ({ ...d, kind: e.target.value as PcsSpec["kind"] }))
-              }
-            >
-              <option value="existing">既設流用</option>
-              <option value="new">新設</option>
-            </select>
-          </div>
-          <div className="field">
             <label>定格出力 (kW)</label>
             <input type="number" step="0.1" value={draft.ratedPowerKw || ""} onChange={num("ratedPowerKw")} />
           </div>
@@ -238,7 +225,6 @@ export function PcsRegistry({ store, plants }: Props) {
             <thead>
               <tr>
                 <th>メーカー / 型番</th>
-                <th>区分</th>
                 <th className="num">定格</th>
                 <th className="num">MPPT</th>
                 <th className="num">電圧範囲</th>
@@ -257,11 +243,6 @@ export function PcsRegistry({ store, plants }: Props) {
                         <span className="badge new" style={{ marginTop: 2 }}>{p.warranty}</span>
                       </div>
                     )}
-                  </td>
-                  <td>
-                    <span className={`badge ${p.kind}`}>
-                      {p.kind === "existing" ? "既設" : "新設"}
-                    </span>
                   </td>
                   <td className="num">{p.ratedPowerKw} kW</td>
                   <td className="num">{p.mpptCount}×{p.stringsPerMppt}</td>

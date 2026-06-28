@@ -219,3 +219,321 @@ describe("optimizePcs", () => {
     expect(r.leftoverTotal).toBe(0);
   });
 });
+
+import { optimizeIntoUnits, optimizeIntoUnitsPatterns } from "./pcsOptimize";
+import type { PcsUnitLine } from "../types";
+
+// PANEL_A(vocV50/vmpV40) × PCS_T → seriesRange {3,12}
+// PCS_HI: mpptVoltageMinV を上げて下限を 11 にした機種 → seriesRange {11,12}
+const PCS_HI: PcsSpec = { ...PCS_T, id: "phi", model: "HI", mpptVoltageMinV: 440 };
+// 同レンジの別機種（混在テスト用）
+const PCS_T2: PcsSpec = { ...PCS_T, id: "pt2", model: "T2" };
+
+describe("optimizeIntoUnits", () => {
+  it("混在2機種・各1台：各台が自機種の strings を受領し、id/pcsId/kind/note を保持", () => {
+    const units: PcsUnitLine[] = [
+      { id: "u1", pcsId: "pt", count: 1, kind: "new", note: "南面", strings: [] },
+      { id: "u2", pcsId: "pt2", count: 1, kind: "existing", note: "北面", strings: [] },
+    ];
+    const r = optimizeIntoUnits({
+      units,
+      inventory: [{ panelId: "pa", count: 48 }],
+      panels: [PANEL_A],
+      pcsList: [PCS_T, PCS_T2],
+      conditions: COND,
+      maxCircuitsPerUnit: 2, // 各台2回路に制限して機種ごとに分け合うことを確認
+    });
+    expect(r.empty).toBe(false);
+    expect(r.units).toHaveLength(2);
+    // 同一性の保持
+    expect(r.units[0]).toMatchObject({ id: "u1", pcsId: "pt", kind: "new", note: "南面" });
+    expect(r.units[1]).toMatchObject({ id: "u2", pcsId: "pt2", kind: "existing", note: "北面" });
+    // 各台が strings を受領
+    const cells = (u: PcsUnitLine) => (u.strings ?? []).reduce((a, s) => a + s.series * s.parallel, 0);
+    expect(cells(r.units[0])).toBe(24);
+    expect(cells(r.units[1])).toBe(24);
+    expect(r.leftoverTotal).toBe(0);
+  });
+
+  it("繰越：機種Aの電圧範囲外のパネルを機種Bが回路化する", () => {
+    // pa:10枚。PCS_HI は下限11本で 10枚は回路不可 → PCS_T(下限3本)が拾う
+    const units: PcsUnitLine[] = [
+      { id: "a", pcsId: "phi", count: 1, strings: [] },
+      { id: "b", pcsId: "pt", count: 1, strings: [] },
+    ];
+    const r = optimizeIntoUnits({
+      units,
+      inventory: [{ panelId: "pa", count: 10 }],
+      panels: [PANEL_A],
+      pcsList: [PCS_HI, PCS_T],
+      conditions: COND,
+    });
+    expect(r.units[0].strings ?? []).toHaveLength(0); // 機種A=割当なし
+    const cellsB = (r.units[1].strings ?? []).reduce((a, s) => a + s.series * s.parallel, 0);
+    expect(cellsB).toBe(10); // 機種Bが10枚を回路化
+    expect(r.leftoverTotal).toBe(0);
+  });
+
+  it("余り：入りきらない分は leftover＋機種別の追加台数目安を返す（台数は増やさない）", () => {
+    const units: PcsUnitLine[] = [{ id: "u1", pcsId: "pt", count: 1, strings: [] }];
+    const r = optimizeIntoUnits({
+      units,
+      inventory: [{ panelId: "pa", count: 100 }],
+      panels: [PANEL_A],
+      pcsList: [PCS_T],
+      conditions: COND,
+    });
+    // 1台=2MPPT×直列12=24枚が上限。100枚中24枚配置・残76枚。
+    expect(r.leftoverTotal).toBe(76);
+    expect(r.units).toHaveLength(1); // 台数は増えない
+    expect(r.extraUnitsNeeded).toHaveLength(1);
+    // 残76枚 ÷ (2MPPT×最大12直=24枚/台) = 約4台
+    expect(r.extraUnitsNeeded[0]).toMatchObject({ pcsId: "pt", count: 4 });
+  });
+
+  it("strings のみ差替・台数同順を保持し、全台へ均等に配る", () => {
+    const units: PcsUnitLine[] = [
+      { id: "u1", pcsId: "pt", count: 1, strings: [] },
+      { id: "u2", pcsId: "pt", count: 1, strings: [] },
+      { id: "u3", pcsId: "pt", count: 1, strings: [] },
+    ];
+    const r = optimizeIntoUnits({
+      units,
+      inventory: [{ panelId: "pa", count: 24 }],
+      panels: [PANEL_A],
+      pcsList: [PCS_T],
+      conditions: COND,
+    });
+    expect(r.units.map((u) => u.id)).toEqual(["u1", "u2", "u3"]);
+    // 24枚を3台×2MPPT=6本へ均等＝各本4直 → 各台8枚（均一）
+    const cells = r.units.map((u) => (u.strings ?? []).reduce((a, s) => a + s.series * s.parallel, 0));
+    expect(cells).toEqual([8, 8, 8]);
+    expect(r.leftoverTotal).toBe(0);
+  });
+
+  it("2型式×マルチMPPTなし機：型式ごとに台数を配分し、両型式とも割り当てる（片方だけ使い切らない）", () => {
+    // OMRON KPV相当（1MPPT・並列4・マルチなし＝1台1型式）。電流40A・パネルIsc≈10で並列4まで有効。
+    const PCS_NM: PcsSpec = {
+      id: "pnm", maker: "Test", model: "NM", kind: "new",
+      ratedPowerKw: 5, mpptCount: 1, multiMppt: false, stringsPerMppt: 4,
+      maxInputVoltageV: 600, mpptVoltageMinV: 90, mpptVoltageMaxV: 560,
+      maxInputCurrentPerMpptA: 40,
+    };
+    const units: PcsUnitLine[] = Array.from({ length: 4 }, (_, i) => ({
+      id: `u${i + 1}`, pcsId: "pnm", count: 1, strings: [],
+    }));
+    const r = optimizeIntoUnits({
+      units,
+      inventory: [{ panelId: "pa", count: 96 }, { panelId: "pb", count: 48 }],
+      panels: [PANEL_A, PANEL_B],
+      pcsList: [PCS_NM],
+      conditions: COND,
+    });
+    // 両型式とも余らず割り当てられる（SANKOだけ使い切ってTrina余り、を防ぐ）
+    expect(r.leftoverTotal).toBe(0);
+    const used = (id: string) =>
+      r.units.flatMap((u) => u.strings ?? []).filter((s) => s.panelId === id).reduce((a, s) => a + s.series * s.parallel, 0);
+    expect(used("pa")).toBe(96);
+    expect(used("pb")).toBe(48);
+    // マルチMPPTなし機：各台は単一型式（混在しない）
+    for (const u of r.units) {
+      const ids = new Set((u.strings ?? []).map((s) => s.panelId));
+      expect(ids.size).toBeLessThanOrEqual(1);
+    }
+  });
+
+  it("非マルチ機：単一型式なら全台へ均一に配り、過積載率をそろえる", () => {
+    const PCS_NM: PcsSpec = {
+      id: "pnm", maker: "Test", model: "NM", kind: "new",
+      ratedPowerKw: 5, mpptCount: 1, multiMppt: false, stringsPerMppt: 4,
+      maxInputVoltageV: 600, mpptVoltageMinV: 90, mpptVoltageMaxV: 560,
+      maxInputCurrentPerMpptA: 40,
+    };
+    // 6台・pa96枚 → 6台×並列4=24本へ均等＝各本4直 → 各台16枚（全台同一＝過積載率も同一）
+    const units: PcsUnitLine[] = Array.from({ length: 6 }, (_, i) => ({
+      id: `u${i + 1}`, pcsId: "pnm", count: 1, strings: [],
+    }));
+    const r = optimizeIntoUnits({
+      units,
+      inventory: [{ panelId: "pa", count: 96 }],
+      panels: [PANEL_A],
+      pcsList: [PCS_NM],
+      conditions: COND,
+    });
+    const counts = r.units.map((u) => (u.strings ?? []).reduce((a, s) => a + s.series * s.parallel, 0));
+    expect(counts).toEqual([16, 16, 16, 16, 16, 16]); // 全台均一
+    // 各台：単一型式・同一直列
+    for (const u of r.units) {
+      expect(new Set((u.strings ?? []).map((s) => s.panelId)).size).toBe(1);
+      expect(new Set((u.strings ?? []).map((s) => s.series)).size).toBe(1);
+    }
+    expect(r.leftoverTotal).toBe(0);
+  });
+
+  it("過積載率を全台でそろえる（W違いの型式を直列数で吸収）", () => {
+    const PCS_NM: PcsSpec = {
+      id: "pnm", maker: "Test", model: "NM", kind: "new",
+      ratedPowerKw: 5, mpptCount: 1, multiMppt: false, stringsPerMppt: 4,
+      maxInputVoltageV: 600, mpptVoltageMinV: 90, mpptVoltageMaxV: 560,
+      maxInputCurrentPerMpptA: 40,
+    };
+    const units: PcsUnitLine[] = Array.from({ length: 8 }, (_, i) => ({ id: `u${i + 1}`, pcsId: "pnm", count: 1, strings: [] }));
+    const r = optimizeIntoUnits({
+      units,
+      inventory: [{ panelId: "pa", count: 192 }, { panelId: "pb", count: 96 }],
+      panels: [PANEL_A, PANEL_B],
+      pcsList: [PCS_NM],
+      conditions: COND,
+    });
+    expect(r.leftoverTotal).toBe(0); // 全パネル使用
+    const ps = [PANEL_A, PANEL_B];
+    const overloads = r.units
+      .map((u) => (u.strings ?? []).reduce((a, s) => a + s.series * s.parallel * (ps.find((p) => p.id === s.panelId)?.pmaxW ?? 0), 0) / 5000)
+      .filter((o) => o > 0);
+    const spread = Math.max(...overloads) - Math.min(...overloads);
+    expect(spread).toBeLessThan(0.3); // 過積載率の幅は30ポイント未満（手計算の約36ptより狭い）
+    for (const u of r.units) {
+      if ((u.strings ?? []).length === 0) continue;
+      expect(new Set((u.strings ?? []).map((s) => s.panelId)).size).toBe(1); // 単一型式
+      expect(new Set((u.strings ?? []).map((s) => s.series)).size).toBe(1); // 同一直列
+    }
+  });
+
+  it("端数は既存ストリングの直列+1で吸収し、残ゼロに近づける（マルチ機）", () => {
+    const PCS_NM: PcsSpec = {
+      id: "pnm", maker: "Test", model: "NM", kind: "new",
+      ratedPowerKw: 5, mpptCount: 1, multiMppt: false, stringsPerMppt: 4,
+      maxInputVoltageV: 600, mpptVoltageMinV: 90, mpptVoltageMaxV: 560,
+      maxInputCurrentPerMpptA: 40,
+    };
+    // u1=マルチ(2MPPT) + u2=非マルチ(並列4)。pa22 は非マルチ側に端数2が出るが、
+    // マルチ機のストリングを直列+1して使い切る。
+    const units: PcsUnitLine[] = [
+      { id: "u1", pcsId: "pt", count: 1, strings: [] },
+      { id: "u2", pcsId: "pnm", count: 1, strings: [] },
+    ];
+    const r = optimizeIntoUnits({
+      units,
+      inventory: [{ panelId: "pa", count: 22 }],
+      panels: [PANEL_A],
+      pcsList: [PCS_T, PCS_NM],
+      conditions: COND,
+    });
+    expect(r.leftoverTotal).toBe(0);
+    const total = r.units.flatMap((u) => u.strings ?? []).reduce((a, s) => a + s.series * s.parallel, 0);
+    expect(total).toBe(22);
+    // 直列は電圧範囲内（3..12）
+    for (const u of r.units) for (const s of u.strings ?? []) {
+      expect(s.series).toBeGreaterThanOrEqual(3);
+      expect(s.series).toBeLessThanOrEqual(12);
+    }
+  });
+
+  it("おすすめ3案：組み方（ストリング本数）が変わる（影に強い＞配線シンプル）", () => {
+    // KPR相当：4MPPT・1本/MPPT・マルチ。パネルは range{2,9}（vocV50/maxV450）。
+    const PCS_KPR: PcsSpec = {
+      id: "pkpr", maker: "OMRON", model: "KPR", kind: "new",
+      ratedPowerKw: 5.6, mpptCount: 4, multiMppt: true, stringsPerMppt: 1,
+      maxInputVoltageV: 450, mpptVoltageMinV: 50, mpptVoltageMaxV: 450,
+      maxInputCurrentPerMpptA: 12,
+    };
+    const units: PcsUnitLine[] = Array.from({ length: 4 }, (_, i) => ({ id: `u${i + 1}`, pcsId: "pkpr", count: 1, strings: [] }));
+    const pats = optimizeIntoUnitsPatterns({
+      units,
+      inventory: [{ panelId: "pa", count: 72 }],
+      panels: [PANEL_A],
+      pcsList: [PCS_KPR],
+      conditions: COND,
+    });
+    expect(pats).toHaveLength(3);
+    const strCount = (key: string) =>
+      pats.find((p) => p.key === key)!.result.units.reduce((a, u) => a + (u.strings ?? []).length, 0);
+    // 影に強い（短・多）＞ 配線シンプル（長・少）
+    expect(strCount("shade")).toBeGreaterThan(strCount("wiring"));
+    // どの案も全72枚を使い切る
+    for (const p of pats) expect(p.result.leftoverTotal).toBe(0);
+  });
+
+  it("非マルチ機：端数は並列内で±1直の混在にして使い切る（違反を作らない）", () => {
+    // KPW相当：1MPPT・並列4・マルチなし。26枚を 4並列以内・±1直で割り切る（例 7直2並+6直2並 や 9直2並+8直1並）。
+    const PCS_NM: PcsSpec = {
+      id: "pnm", maker: "Test", model: "NM", kind: "new",
+      ratedPowerKw: 5, mpptCount: 1, multiMppt: false, stringsPerMppt: 4,
+      maxInputVoltageV: 600, mpptVoltageMinV: 90, mpptVoltageMaxV: 560,
+      maxInputCurrentPerMpptA: 40,
+    };
+    const r = optimizeIntoUnits({
+      units: [{ id: "u1", pcsId: "pnm", count: 1, strings: [] }],
+      inventory: [{ panelId: "pa", count: 26 }],
+      panels: [PANEL_A],
+      pcsList: [PCS_NM],
+      conditions: COND,
+    });
+    expect(r.leftoverTotal).toBe(0); // 端数も使い切る
+    const ss = r.units[0].strings ?? [];
+    expect(ss.reduce((a, s) => a + s.parallel, 0)).toBeLessThanOrEqual(4); // 並列合計 ≤ 上限4（違反なし）
+    const sv = ss.map((s) => s.series);
+    expect(Math.max(...sv) - Math.min(...sv)).toBeLessThanOrEqual(1); // 直列の差は±1以内
+    expect(ss.reduce((a, s) => a + s.series * s.parallel, 0)).toBe(26); // 合計26枚
+  });
+
+  it("一覧が空：empty=true・全在庫が leftover", () => {
+    const r = optimizeIntoUnits({
+      units: [],
+      inventory: [{ panelId: "pa", count: 10 }],
+      panels: [PANEL_A],
+      pcsList: [PCS_T],
+      conditions: COND,
+    });
+    expect(r.empty).toBe(true);
+    expect(r.units).toHaveLength(0);
+    expect(r.leftoverTotal).toBe(10);
+  });
+
+  it("maxCircuitsPerUnit で1台あたりのストリング本数を制限できる", () => {
+    const units: PcsUnitLine[] = [{ id: "u1", pcsId: "pt", count: 1, strings: [] }];
+    const base = {
+      units,
+      inventory: [{ panelId: "pa", count: 48 }],
+      panels: [PANEL_A],
+      pcsList: [PCS_T],
+      conditions: COND,
+    };
+    const def = optimizeIntoUnits(base); // 既定=MPPT2本×最大12直=24枚 → 残24
+    expect(def.leftoverTotal).toBe(24);
+    const cap1 = optimizeIntoUnits({ ...base, maxCircuitsPerUnit: 1 }); // 1本×12直=12枚 → 残36
+    expect(cap1.leftoverTotal).toBe(36);
+  });
+
+  it("電流制約：2並列で電流超過する機種は分岐しない（赤エラーを出さない・全ストリング並列1）", () => {
+    // PCS_AMP は MPPT最大16A、PANEL_A は Isc10A → 2並列=20A は不可 → 有効並列1（分岐なし）
+    const PCS_AMP: PcsSpec = { ...PCS_T, id: "pamp", maxInputCurrentPerMpptA: 16 };
+    const units: PcsUnitLine[] = [{ id: "u1", pcsId: "pamp", count: 1, strings: [] }];
+    const r = optimizeIntoUnits({
+      units,
+      inventory: [{ panelId: "pa", count: 24 }],
+      panels: [PANEL_A],
+      pcsList: [PCS_AMP],
+      conditions: COND,
+      strategy: "dense",
+    });
+    for (const s of r.units[0].strings ?? []) expect(s.parallel).toBe(1); // 分岐しない
+    expect(r.ampWarnings).toHaveLength(0); // 電流超過を作らない
+    expect(r.leftoverTotal).toBe(0); // 2MPPT×1並列=2回路=24枚で収まる
+  });
+
+  it("電流制約：MPPTが余っていても電流上限を超える分は残にする（過剰割り当てしない）", () => {
+    // PCS_AMP(16A)・PANEL_A(10A)：1台=2MPPT×並列1=2回路まで。48枚=4回路 → 2回路(24枚)配置・残24
+    const PCS_AMP: PcsSpec = { ...PCS_T, id: "pamp", maxInputCurrentPerMpptA: 16 };
+    const units: PcsUnitLine[] = [{ id: "u1", pcsId: "pamp", count: 1, strings: [] }];
+    const r = optimizeIntoUnits({
+      units,
+      inventory: [{ panelId: "pa", count: 48 }],
+      panels: [PANEL_A],
+      pcsList: [PCS_AMP],
+      conditions: COND,
+    });
+    expect(r.leftoverTotal).toBe(24);
+    expect(r.extraUnitsNeeded[0]).toMatchObject({ pcsId: "pamp", count: 1 });
+  });
+});

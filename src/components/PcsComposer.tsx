@@ -3,7 +3,7 @@ import type { PanelSpec, PcsSpec, PowerPlant, PcsUnitLine, PcsString, DesignCond
 import { uid } from "../store";
 import { summarizeLayout } from "../calc/layoutCount";
 import { calcStringSizing } from "../calc/stringSizing";
-import { optimizePcs, type OptimizeResult, type PackStrategy } from "../calc/pcsOptimize";
+import { optimizeIntoUnitsPatterns, type OptimizeIntoUnitsResult, type OptimizePattern } from "../calc/pcsOptimize";
 
 interface Props {
   plant: PowerPlant;
@@ -22,15 +22,23 @@ interface Props {
 export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }: Props) {
   const units = plant.pcsUnits ?? [];
   const [bulkCount, setBulkCount] = useState(1);
+  const [addPcsId, setAddPcsId] = useState(pcsList[0]?.id ?? ""); // 追加する機種
+  const [addKind, setAddKind] = useState<"new" | "existing">("new"); // 追加する種別（新設/既設）
+  // 機種一覧が変わったとき、未選択なら先頭機種に寄せる
+  useEffect(() => {
+    if (!pcsList.some((p) => p.id === addPcsId)) setAddPcsId(pcsList[0]?.id ?? "");
+  }, [pcsList, addPcsId]);
   const fmt = (n: number) => n.toLocaleString();
   const kw = (n: number) => n.toFixed(2);
 
-  // --- 自動構成（下書き）の入力state ---
-  const [optModelId, setOptModelId] = useState(pcsList[0]?.id ?? "");
-  const [optCount, setOptCount] = useState(8);
-  const [optMaxCircuits, setOptMaxCircuits] = useState(pcsList[0]?.mpptCount ?? 2);
-  const [optPreview, setOptPreview] = useState<OptimizeResult | null>(null);
-  const [optStrategy, setOptStrategy] = useState<PackStrategy>("spread");
+  // --- 最適化（下の一覧へ割り当て）の入力state ---
+  // 台数・機種は「下の一覧」由来。任意の最大回路数上書きのみ持つ。
+  const [optMaxCircuits, setOptMaxCircuits] = useState(0); // 0=各機種のMPPT数を既定
+  const [optForce, setOptForce] = useState(false); // 残りを無理やり割り当てる（注意マーク付き）
+  const [optPatterns, setOptPatterns] = useState<OptimizePattern[] | null>(null); // おすすめ3案
+  const [optKey, setOptKey] = useState<string>("balanced"); // 選択中の案
+  const optPreview: OptimizeIntoUnitsResult | null =
+    optPatterns?.find((p) => p.key === optKey)?.result ?? optPatterns?.[1]?.result ?? null;
 
   // --- 旧データ（台数まとめ）を 1台＝1行 に自動展開 ---
   useEffect(() => {
@@ -86,20 +94,28 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
     const unitCells = strings.reduce((a, b) => a + b.cells, 0);
     const unitDcKw = strings.reduce((a, b) => a + b.dcW, 0) / 1000;
     const overloadPct = ratedKw > 0 ? (unitDcKw / ratedKw) * 100 : 0;
-    // ユニット単位のエラー（MPPT回路数より多いストリング行）
+    // ユニット単位のエラー
     const unitErrors: string[] = [];
-    if (pcs && (u.strings?.length ?? 0) > pcs.mpptCount)
-      unitErrors.push(`ストリング行 ${u.strings?.length} がMPPT回路数 ${pcs.mpptCount} を超過`);
-    // 非マルチMPPT機：全ストリングを同一パネル・同一直列数にしないと非効率
-    if (pcs && pcs.multiMppt === false) {
-      const ss = u.strings ?? [];
-      if (ss.length > 1) {
-        const samePanel = ss.every((s) => s.panelId === ss[0].panelId);
-        const sameSeries = ss.every((s) => s.series === ss[0].series);
-        if (!samePanel || !sameSeries)
-          unitErrors.push(
-            "非マルチMPPT機：全ストリングを同一パネル・同一直列数に揃えてください（パネル/枚数が混在すると最弱ストリングに律速され非効率）"
-          );
+    if (pcs) {
+      if (pcs.multiMppt === false) {
+        // 非マルチ機（1MPPT）：行数ではなく「並列合計」で上限判定。直列は ±1 までの混在は許容（例 7直×2＋6直×2）。
+        const ss = u.strings ?? [];
+        if (ss.length > 0) {
+          const samePanel = ss.every((s) => s.panelId === ss[0].panelId);
+          if (!samePanel) unitErrors.push("非マルチMPPT機：1台に複数の型式は載せられません（同一型式に揃えてください）");
+          const totalParallel = ss.reduce((a, s) => a + s.parallel, 0);
+          const panel0 = panels.find((p) => p.id === ss[0].panelId);
+          const cap = panel0 ? calcStringSizing(panel0, pcs, conditions).parallelMaxPerMppt : pcs.stringsPerMppt;
+          if (totalParallel > Math.max(1, cap))
+            unitErrors.push(`並列合計 ${totalParallel} 本が上限 ${cap} 本を超過（1MPPT・電流/並列上限）`);
+          const sv = ss.map((s) => s.series);
+          if (Math.max(...sv) - Math.min(...sv) > 1)
+            unitErrors.push("非マルチMPPT機：直列数の差が大きく非効率（最弱ストリングに律速・±1直程度に）");
+        }
+      } else {
+        // マルチ機：ストリング行＝MPPT数まで
+        if ((u.strings?.length ?? 0) > pcs.mpptCount)
+          unitErrors.push(`ストリング行 ${u.strings?.length} がMPPT回路数 ${pcs.mpptCount} を超過`);
       }
     }
     const hasError = unitErrors.length > 0 || strings.some((s) => s.errors.length > 0);
@@ -123,25 +139,24 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
     })
     .filter((x): x is { panelId: string; count: number } => x !== null);
 
-  function runOptimize() {
-    const pcs = pcsList.find((p) => p.id === optModelId);
-    if (!pcs || optCount < 1 || optMaxCircuits < 1) return;
-    setOptPreview(
-      optimizePcs({
-        inventory: optInventory,
-        panels,
-        pcs,
-        conditions,
-        unitCount: optCount,
-        maxCircuitsPerUnit: optMaxCircuits,
-        strategy: optStrategy,
-      })
-    );
+  function runOptimize(force = optForce) {
+    if (units.length === 0) return;
+    const pats = optimizeIntoUnitsPatterns({
+      units,
+      inventory: optInventory,
+      panels,
+      pcsList,
+      conditions,
+      maxCircuitsPerUnit: optMaxCircuits || undefined,
+      force,
+    });
+    setOptPatterns(pats);
+    setOptKey("balanced"); // 既定は「標準（おすすめ）」
   }
   function applyOptimize() {
     if (!optPreview) return;
     updatePlant(plant.id, { pcsUnits: optPreview.units });
-    setOptPreview(null);
+    setOptPatterns(null);
   }
 
   // --- 型式別の在庫（図面枚数 vs パワコンへ割り振った使用枚数） ---
@@ -193,14 +208,15 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
     }
     return out;
   }
-  function makeUnit(pcs: PcsSpec): PcsUnitLine {
-    return { id: uid("pcsline"), pcsId: pcs.id, count: 1, strings: syncStringsToMppt([], pcs.mpptCount) };
+  function makeUnit(pcs: PcsSpec, kind?: "new" | "existing"): PcsUnitLine {
+    return { id: uid("pcsline"), pcsId: pcs.id, count: 1, kind, strings: syncStringsToMppt([], pcs.mpptCount) };
   }
   /** 台数分の新規ユニットをまとめて追加（各台は同じ初期構成・別々に編集可）。 */
-  function addUnits(n: number) {
-    const first = pcsList[0];
-    if (!first) return;
-    const add = Array.from({ length: Math.max(1, n) }, () => makeUnit(first));
+  function addUnits(n: number, pcsId?: string, kind?: "new" | "existing") {
+    const pcs = pcsList.find((p) => p.id === (pcsId ?? addPcsId)) ?? pcsList[0];
+    if (!pcs) return;
+    const k = kind ?? addKind;
+    const add = Array.from({ length: Math.max(1, n) }, () => makeUnit(pcs, k));
     setUnits([...units, ...add]);
   }
   function duplicateUnit(id: string) {
@@ -381,64 +397,117 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
             直列数・並列数がパワコンの電圧/電流上限を超えています。各台の赤い表示を確認してください。
           </div>
         )}
-        {/* 自動構成（下書き補助） */}
+        {/* 最適化（下の一覧へ割り当て） */}
         <div style={{ marginTop: 12, paddingTop: 12, borderTop: "1px solid var(--border)" }}>
           <div className="row" style={{ alignItems: "flex-end" }}>
-            <strong style={{ fontSize: 14 }}>🎯 自動構成（下書き）</strong>
-            <div className="field" style={{ minWidth: 220 }}>
-              <label>対象パワコン機種</label>
-              <select
-                value={optModelId}
-                onChange={(e) => {
-                  setOptModelId(e.target.value);
-                  const p = pcsList.find((x) => x.id === e.target.value);
-                  if (p) setOptMaxCircuits(p.mpptCount);
-                }}
-              >
-                {pcsList.map((p) => (
-                  <option key={p.id} value={p.id}>{p.maker} {p.model}（{p.ratedPowerKw}kW）</option>
-                ))}
-              </select>
+            <strong style={{ fontSize: 14 }}>🎯 最適化（現在の台数へ割り当て）</strong>
+            <div className="field" style={{ width: 220 }}>
+              <label>最大回路数/台（空欄=各機種の最大）</label>
+              <input
+                type="number"
+                min={0}
+                value={optMaxCircuits || ""}
+                placeholder="空欄=満杯（MPPT×並列）"
+                onChange={(e) => setOptMaxCircuits(Math.max(0, Number(e.target.value) || 0))}
+              />
             </div>
-            <div className="field" style={{ width: 80 }}>
-              <label>台数</label>
-              <input type="number" min={1} value={optCount}
-                onChange={(e) => setOptCount(Math.max(1, Number(e.target.value) || 1))} />
-            </div>
-            <div className="field" style={{ width: 130 }}>
-              <label>最大回路数/台</label>
-              <input type="number" min={1} value={optMaxCircuits}
-                onChange={(e) => setOptMaxCircuits(Math.max(1, Number(e.target.value) || 1))} />
-            </div>
-            <div className="field" style={{ minWidth: 200 }}>
-              <label>配分の優先</label>
-              <select value={optStrategy} onChange={(e) => setOptStrategy(e.target.value as PackStrategy)}>
-                <option value="spread">影に強い（MPPT分散）</option>
-                <option value="dense">台数を詰める（分岐優先）</option>
-              </select>
-            </div>
-            <button className="btn" onClick={runOptimize}>最適化（下書きを作成）</button>
+            <label className="field" style={{ flexDirection: "row", alignItems: "center", gap: 6, minWidth: 0 }}>
+              <input type="checkbox" checked={optForce} onChange={(e) => setOptForce(e.target.checked)} />
+              <span style={{ fontSize: 12 }}>残りも強制割当（注意マーク付き）</span>
+            </label>
+            <button className="btn" onClick={() => runOptimize()} disabled={units.length === 0}>
+              おすすめ3案を作成
+            </button>
           </div>
           <span className="hint">
-            図面のパネルを使い切る方向で各台へ割り振った下書きを作ります（電圧上限は厳守・電流超過は警報のみ）。最大回路数は機種のMPPT数が既定（Huaweiは分岐で3など手入力）。分散＝影に強い・電流が素直／詰める＝台数最少（分岐・コスト優先）。
+            {units.length === 0
+              ? "先に下で「＋ パワコンを1台追加」してから最適化してください。"
+              : "下の一覧のパワコン（現在の台数・機種）へ、図面のパネルを自動割り当て。各台の過積載率（DC/定格）がそろうよう型式のW差を直列数で吸収します（機種混在対応・電圧/電流は厳守）。ストリングの組み方違いで【影に強い／標準／配線シンプル】の3案を提示するので、選んで適用してください。入りきらない分は残＋「あと◯台」を表示。"}
           </span>
 
-          {optPreview && (
+          {optPatterns && optPreview && (
             <div className="card" style={{ marginTop: 10, background: "var(--panel-2)" }}>
+              {/* おすすめ3案セレクタ（1案/2案/3案 を横並びで比較） */}
+              {(() => {
+                const metrics = optPatterns.map((p) => {
+                  const strCount = p.result.units.reduce((a, u) => a + (u.strings ?? []).length, 0);
+                  const ov = p.result.units
+                    .map((u) => {
+                      const pcs = pcsList.find((x) => x.id === u.pcsId);
+                      const dc = (u.strings ?? []).reduce(
+                        (a, s) => a + s.series * s.parallel * (panels.find((pp) => pp.id === s.panelId)?.pmaxW ?? 0),
+                        0
+                      );
+                      return pcs && pcs.ratedPowerKw > 0 && dc > 0 ? (dc / (pcs.ratedPowerKw * 1000)) * 100 : null;
+                    })
+                    .filter((x): x is number => x != null);
+                  const ovLabel = ov.length ? `${Math.round(Math.min(...ov))}–${Math.round(Math.max(...ov))}%` : "—";
+                  return { strCount, ovLabel, leftover: p.result.leftoverTotal };
+                });
+                const allSame = metrics.every(
+                  (m) => m.strCount === metrics[0].strCount && m.leftover === metrics[0].leftover && m.ovLabel === metrics[0].ovLabel
+                );
+                return (
+                  <>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, marginBottom: 6 }}>
+                      {optPatterns.map((p, idx) => {
+                        const selected = p.key === optKey;
+                        const m = metrics[idx];
+                        return (
+                          <button
+                            key={p.key}
+                            className={selected ? "btn" : "btn secondary"}
+                            onClick={() => setOptKey(p.key)}
+                            style={{ flexDirection: "column", alignItems: "flex-start", textAlign: "left", padding: "8px 10px", height: "auto" }}
+                          >
+                            <span style={{ fontWeight: 700 }}>{idx + 1}案</span>
+                            <span style={{ fontSize: 12 }}>{p.label}</span>
+                            <span style={{ fontSize: 11, opacity: 0.85, marginTop: 2 }}>
+                              過積載 {m.ovLabel}
+                              <br />
+                              {m.strCount}本 ／ 残{m.leftover}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {allSame && (
+                      <div className="hint" style={{ marginBottom: 6 }}>
+                        ※ この機種・枚数では3案とも同じ構成になります（機種仕様でストリングの組み方が一通りに決まるため）。
+                      </div>
+                    )}
+                  </>
+                );
+              })()}
               <div className="row">
-                <strong>プレビュー（{optPreview.units.length} 台）</strong>
+                <strong>プレビュー：{optPatterns.find((p) => p.key === optKey)?.label}（{optPreview.units.length} 台）</strong>
                 <span className="spacer" />
-                <button className="btn small" onClick={applyOptimize}>この内容を適用</button>
-                <button className="btn secondary small" onClick={() => setOptPreview(null)}>破棄</button>
+                <button className="btn small" onClick={applyOptimize}>この案を適用</button>
+                <button className="btn secondary small" onClick={() => setOptPatterns(null)}>破棄</button>
               </div>
-              <div className="hint" style={{ marginTop: 4 }}>
-                残 {fmt(optPreview.leftoverTotal)} 枚
-                {optPreview.leftoverTotal > 0 && optPreview.unitsNeededForAll > optCount &&
-                  `（使い切るには約 ${optPreview.unitsNeededForAll} 台必要）`}
+              <div className="row" style={{ marginTop: 4, alignItems: "center", gap: 8 }}>
+                <span className="hint" style={{ marginTop: 0 }}>
+                  残 {fmt(optPreview.leftoverTotal)} 枚
+                  {optPreview.extraUnitsNeeded.length > 0 &&
+                    `（使い切るには ${optPreview.extraUnitsNeeded
+                      .map((e) => `${e.pcsLabel} 約${e.count}台`)
+                      .join(" / ")} の追加が目安）`}
+                </span>
+                {optPreview.leftoverTotal > 0 && !optForce && (
+                  <button
+                    className="btn warn small"
+                    onClick={() => {
+                      setOptForce(true);
+                      runOptimize(true);
+                    }}
+                  >
+                    ⚠ 残りを強制割当
+                  </button>
+                )}
               </div>
-              {optPreview.units.length === 0 && (
+              {optPreview.units.every((u) => (u.strings ?? []).length === 0) && (
                 <div className="warn-item" style={{ marginTop: 6 }}>
-                  作成できる回路がありません（図面が空、または図面のパネルがこのパワコンの電圧範囲に合いません）。図面のパネル配置・対象機種・条件を確認してください。
+                  どの台にも回路を作成できませんでした（図面が空、または図面のパネルが各機種の電圧範囲に合いません）。図面のパネル配置・機種・条件を確認してください。
                 </div>
               )}
               {optPreview.ampWarnings.map((w, i) => (
@@ -448,15 +517,29 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
                 <div className="hint" key={"n" + i} style={{ marginTop: 2 }}>・{n}</div>
               ))}
               <table className="list" style={{ marginTop: 8 }}>
-                <thead><tr><th>#</th><th>MPPT構成（型式 / 直列 × 並列）</th><th className="num">枚数</th></tr></thead>
+                <thead><tr><th>#</th><th>機種</th><th>MPPT構成（型式 / 直列 × 並列）</th><th className="num">枚数</th></tr></thead>
                 <tbody>
                   {optPreview.units.map((u, i) => {
                     const cells = (u.strings ?? []).reduce((a, s) => a + s.series * s.parallel, 0);
-                    const desc = (u.strings ?? []).map((s) => {
-                      const p = panels.find((pp) => pp.id === s.panelId);
-                      return `${p ? p.model : "?"} ${s.series}直×${s.parallel}並`;
-                    }).join(" ／ ");
-                    return (<tr key={u.id}><td>#{i + 1}</td><td>{desc}</td><td className="num">{cells}</td></tr>);
+                    const pcs = pcsList.find((p) => p.id === u.pcsId);
+                    const pcsLabel = pcs ? `${pcs.maker} ${pcs.model}` : "?";
+                    const desc =
+                      (u.strings ?? []).length === 0
+                        ? "（割当なし）"
+                        : (u.strings ?? [])
+                            .map((s) => {
+                              const p = panels.find((pp) => pp.id === s.panelId);
+                              return `${p ? p.model : "?"} ${s.series}直×${s.parallel}並`;
+                            })
+                            .join(" ／ ");
+                    return (
+                      <tr key={u.id}>
+                        <td>#{i + 1}</td>
+                        <td>{pcsLabel}</td>
+                        <td>{desc}</td>
+                        <td className="num">{cells}</td>
+                      </tr>
+                    );
                   })}
                 </tbody>
               </table>
@@ -465,14 +548,32 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
         </div>
 
         <div className="row" style={{ marginTop: 10, alignItems: "flex-end" }}>
-          <button className="btn" onClick={() => addUnits(1)}>＋ パワコンを1台追加</button>
+          <div className="field" style={{ minWidth: 240 }}>
+            <label>追加する機種</label>
+            <select value={addPcsId} onChange={(e) => setAddPcsId(e.target.value)}>
+              {pcsList.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.maker} {p.model}（{p.ratedPowerKw}kW）
+                </option>
+              ))}
+            </select>
+          </div>
+          <div className="field" style={{ minWidth: 150 }}>
+            <label>種別</label>
+            <select value={addKind} onChange={(e) => setAddKind(e.target.value as "new" | "existing")}>
+              <option value="new">新設</option>
+              <option value="existing">既設（流用）</option>
+            </select>
+            <div className="hint">{addKind === "existing" ? "流用＝設置費なし" : "新設＝設置費がかかる"}</div>
+          </div>
           <div className="field" style={{ width: 90 }}>
             <label>台数</label>
             <input type="number" min={1} value={bulkCount} onChange={(e) => setBulkCount(Math.max(1, Number(e.target.value) || 1))} />
           </div>
-          <button className="btn secondary" onClick={() => addUnits(bulkCount)}>この台数をまとめて追加</button>
+          <button className="btn" onClick={() => addUnits(bulkCount)}>この機種を追加</button>
+          <button className="btn secondary" onClick={() => addUnits(1)}>1台だけ追加</button>
           <span className="hint">
-            追加すると1台ずつ下に並びます。各台を<strong>別々に設定</strong>でき、似た台は<strong>「複製」</strong>で増やせます。
+            選んだ機種を台数分まとめて追加します（1台ずつ下に並び、各台を<strong>別々に設定</strong>・<strong>「複製」</strong>も可）。機種が一覧に無いときは「パワコン登録」で追加してください。
           </span>
         </div>
       </div>
@@ -500,7 +601,7 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
               <select value={g.line.pcsId} onChange={(e) => changeUnitPcs(g.line.id, e.target.value)}>
                 {pcsList.map((p) => (
                   <option key={p.id} value={p.id}>
-                    {p.maker} {p.model}（{p.kind === "existing" ? "既設" : "新設"} / {p.ratedPowerKw}kW{p.warranty ? ` / ${p.warranty}` : ""}）
+                    {p.maker} {p.model}（{p.ratedPowerKw}kW{p.warranty ? ` / ${p.warranty}` : ""}）
                   </option>
                 ))}
               </select>
@@ -511,14 +612,14 @@ export function PcsComposer({ plant, panels, pcsList, conditions, updatePlant }:
             <div className="field" style={{ minWidth: 150 }}>
               <label>種別</label>
               <select
-                value={g.line.kind ?? g.pcs?.kind ?? "new"}
+                value={g.line.kind ?? "new"}
                 onChange={(e) => updateUnit(g.line.id, { kind: e.target.value as "existing" | "new" })}
               >
                 <option value="new">新設</option>
                 <option value="existing">既設（流用）</option>
               </select>
               <div className="hint">
-                {(g.line.kind ?? g.pcs?.kind) === "existing" ? "流用＝設置費なし" : "新設＝設置費がかかる"}
+                {(g.line.kind ?? "new") === "existing" ? "流用＝設置費なし" : "新設＝設置費がかかる"}
               </div>
             </div>
             <div className="field" style={{ flex: 1, minWidth: 160 }}>

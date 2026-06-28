@@ -70,7 +70,7 @@ export function StringCalculator({
             <select value={pcsId} onChange={(e) => { setPcsId(e.target.value); setSeries(null); setParallel(null); }}>
               {pcsList.map((p) => (
                 <option key={p.id} value={p.id}>
-                  {p.maker} {p.model}（{p.ratedPowerKw}kW / {p.kind === "existing" ? "既設" : "新設"}）
+                  {p.maker} {p.model}（{p.ratedPowerKw}kW）
                 </option>
               ))}
             </select>
@@ -88,6 +88,7 @@ export function StringCalculator({
                 setConditions({ ...conditions, minAmbientTempC: Number(e.target.value) })
               }
             />
+            <div className="hint">既定 −3℃（西尾市基準）。低いほど低温Vocが上がり直列上限が下がる（過電圧に安全側）。寒冷地は下げる。</div>
           </div>
           <div className="field">
             <label>設計最高セル温度 ℃（高温Vmp）</label>

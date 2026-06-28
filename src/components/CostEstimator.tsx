@@ -66,33 +66,40 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
 
     const newLines = [...map.entries()].map(([panelId, v]) => ({ panelId, ...v }));
     const newTotal = newLines.reduce((s, l) => s + l.count, 0);
-    // 新設パワコン台数（台ごとの実効種別＝ u.kind ?? マスタの kind が新設のもの）
+    // 新設パワコン（台ごとの種別が新設のもの）。台数と、各台の機種単価を合算した金額。
     let newPcs = 0;
+    let newPcsYen = 0; // 新設台の機種単価×台数の合計
+    let newPcsId = ""; // 新設台の代表機種（コスト欄の既定選択用）
     for (const u of plant.pcsUnits ?? []) {
+      const eff = u.kind ?? "new"; // 区分は台ごと。未指定は新設扱い（コストは新設の台だけ計上）
+      if (eff !== "new") continue;
+      const cnt = u.count ?? 1;
       const pcs = pcsList.find((p) => p.id === u.pcsId);
-      const eff = u.kind ?? pcs?.kind;
-      if (eff === "new") newPcs += u.count ?? 1;
+      newPcs += cnt;
+      newPcsYen += (pcs?.unitPriceYen ?? 0) * cnt;
+      if (!newPcsId) newPcsId = u.pcsId;
     }
-    return { newLines, newTotal, removedExisting, keptKw, beforeKw, newPcs };
+    return { newLines, newTotal, removedExisting, keptKw, beforeKw, newPcs, newPcsYen, newPcsId };
   }, [plant.layout.arrays, plant.layout.freePanels, plant.layout.manualCurrent, plant.pcsUnits, panels, pcsList]);
 
   // ===== 編集用ステート（初期値＝現況から反映） =====
+  const ac = plant.activeCost ?? {};
   const [lines, setLines] = useState<EditLine[]>(() =>
-    derived.newLines.map((l) => ({ id: uid("cl"), label: l.label, w: l.w, count: l.count, unitYen: l.unitYen }))
+    (ac.panelLines ?? derived.newLines).map((l) => ({ id: uid("cl"), label: l.label, w: l.w, count: l.count, unitYen: l.unitYen }))
   );
-  const [removedDisposal, setRemovedDisposal] = useState(derived.removedExisting);
-  const [removedStock, setRemovedStock] = useState(0);
+  const [removedDisposal, setRemovedDisposal] = useState(ac.removedDisposal ?? derived.removedExisting);
+  const [removedStock, setRemovedStock] = useState(ac.removedStock ?? 0);
 
-  const [pcsMode, setPcsMode] = useState<"keep" | "new">(derived.newPcs > 0 ? "new" : "keep");
-  const [pcsId, setPcsId] = useState(pcsList[0]?.id ?? "");
-  const [newPcsCount, setNewPcsCount] = useState(derived.newPcs);
-  const [removedPcsCount, setRemovedPcsCount] = useState(0);
-  const [pcsUnitYen, setPcsUnitYen] = useState<number | "">("");
-  const [afterGenOverride, setAfterGenOverride] = useState<number | "">("");
+  const [pcsMode, setPcsMode] = useState<"keep" | "new">(ac.pcsMode ?? (derived.newPcs > 0 ? "new" : "keep"));
+  const [pcsId, setPcsId] = useState(ac.pcsId ?? derived.newPcsId ?? pcsList[0]?.id ?? "");
+  const [newPcsCount, setNewPcsCount] = useState(ac.newPcsCount ?? derived.newPcs);
+  const [removedPcsCount, setRemovedPcsCount] = useState(ac.removedPcsCount ?? 0);
+  const [pcsUnitYen, setPcsUnitYen] = useState<number | "">(ac.pcsUnitYen ?? "");
+  const [afterGenOverride, setAfterGenOverride] = useState<number | "">(ac.afterGenOverride ?? "");
 
   // 監視装置（SmartLogger 等）：なし / 通常 / Lite の3択＋単価
-  const [loggerType, setLoggerType] = useState<"none" | "full" | "lite">("none");
-  const [loggerUnitYen, setLoggerUnitYen] = useState<number | "">("");
+  const [loggerType, setLoggerType] = useState<"none" | "full" | "lite">(ac.loggerType ?? "none");
+  const [loggerUnitYen, setLoggerUnitYen] = useState<number | "">(ac.loggerUnitYen ?? "");
   const loggerLabel = loggerType === "full" ? "監視装置 SmartLogger 3000A" : loggerType === "lite" ? "監視装置 SmartLogger 3000A Lite版" : "";
   const extraLines =
     loggerType !== "none"
@@ -100,7 +107,9 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
       : [];
 
   const pcs = pcsList.find((p) => p.id === pcsId) ?? null;
-  const effPcsUnit = pcsUnitYen === "" ? pcs?.unitPriceYen ?? 0 : pcsUnitYen;
+  // 既定の単価は「実際の新設台の機種単価の平均」（機種混在でも 平均×台数＝実額 になる）。未指定時のみ手入力で上書き。
+  const derivedPcsUnit = derived.newPcs > 0 ? Math.round(derived.newPcsYen / derived.newPcs) : pcs?.unitPriceYen ?? 0;
+  const effPcsUnit = pcsUnitYen === "" ? derivedPcsUnit : pcsUnitYen;
 
   /** 現況レイアウトの数字を編集欄に反映する。 */
   function applyFromLayout() {
@@ -112,8 +121,9 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
   }
 
   // ===== その他費用（任意・発電所ごとに保存） =====
-  const extraCostLines = plant.extraCostLines ?? [];
-  const setExtra = (next: ExtraCostLine[]) => updatePlant(plant.id, { extraCostLines: next });
+  const extraCostLines = plant.activeCost?.extraCostLines ?? plant.extraCostLines ?? [];
+  const setExtra = (next: ExtraCostLine[]) =>
+    updatePlant(plant.id, { activeCost: { ...(plant.activeCost ?? {}), extraCostLines: next } });
   const addExtra = () =>
     setExtra([...extraCostLines, { id: uid("ex"), label: "", qty: 1, unit: "式", unitYen: 0, inMisc: false }]);
   const updateExtra = (id: string, patch: Partial<ExtraCostLine>) =>
