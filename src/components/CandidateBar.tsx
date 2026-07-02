@@ -1,4 +1,5 @@
 import type { PowerPlant } from "../types";
+import { useConfirm, usePrompt } from "./ui/dialogs";
 
 interface Props {
   plant: PowerPlant;
@@ -18,31 +19,35 @@ interface Props {
 export function CandidateBar({ plant, switchCandidate, addCandidate, renameCandidate, deleteCandidate }: Props) {
   const candidates = plant.candidates ?? [];
   const activeId = plant.currentCandidateId;
+  const confirmDlg = useConfirm();
+  const promptDlg = usePrompt();
 
-  function rename(id: string, current: string) {
-    const name = prompt("候補の名前", current);
+  async function rename(id: string, current: string) {
+    const name = await promptDlg({ title: "候補の名前を変更", message: "新しい名前を入力してください。", defaultValue: current });
     if (name && name.trim()) renameCandidate(id, name.trim());
   }
 
-  function remove(id: string, name: string) {
+  async function remove(id: string, name: string) {
     const last = candidates.length <= 1;
     const msg = last
       ? `${name} を削除しますか？\n最後の候補なので候補未使用に戻り、図面は既設（全部流用）だけの状態になります。\n（この候補の変更内容・新設・パワコン構成は消えます）`
       : `${name} を削除しますか？（この候補の変更内容・パワコン構成が消えます）`;
-    if (confirm(msg)) {
+    if (await confirmDlg({ title: "候補の削除", message: msg, okLabel: "削除する", danger: true })) {
       deleteCandidate(id);
     }
   }
 
   /** 候補の追加。最初の候補を作る前に、既設変更との関係を一言知らせておく。 */
-  function add() {
+  async function add() {
     if (
       candidates.length === 0 &&
-      !confirm(
-        "変更の検討（候補）を始めます。\n" +
+      !(await confirmDlg({
+        title: "変更の検討を始めます",
+        message:
           "注意：候補を作った後で「① 既設の設定」（地図・写真・校正・向き）を変更すると、全ての候補が削除されます。\n" +
-          "既設の図面を直す予定があれば、先に済ませてから候補を作ってください。\n\nよろしいですか？"
-      )
+          "既設の図面を直す予定があれば、先に済ませてから候補を作ってください。\n\nよろしいですか？",
+        okLabel: "始める",
+      }))
     )
       return;
     addCandidate();

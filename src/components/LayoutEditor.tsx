@@ -9,6 +9,7 @@ import { fileToScaledDataUrl } from "../utils/image";
 import { geocodeAddress, buildSeamlessPhoto, calibrationFromScale } from "../utils/gsiMap";
 import { uid } from "../store";
 import { PanelPicker } from "./PanelPicker";
+import { useConfirm, usePrompt, useToast } from "./ui/dialogs";
 
 const KEEP_COLOR = "#22c55e"; // 流用（変更しない）パネルの色
 
@@ -87,11 +88,17 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const [imgReady, setImgReady] = useState(false);
+  // 共通ダイアログ（ネイティブ alert/confirm/prompt の代替）
+  const toast = useToast();
+  const confirmDlg = useConfirm();
+  const promptDlg = usePrompt();
 
-  // 元に戻す（Undo）用の履歴。変更前の layout を積む。
+  // 元に戻す（Undo）／やり直す（Redo）用の履歴。変更前の layout を積む。
   // 既存の patch 呼び出しはすべてこのラッパ経由になり、自動で履歴対象になる。
   const historyRef = useRef<LayoutProject[]>([]);
+  const redoRef = useRef<LayoutProject[]>([]);
   const [histLen, setHistLen] = useState(0);
+  const [redoLen, setRedoLen] = useState(0);
   // ドラッグ・スライダーは mousemove/onChange 毎に発火するため、そのまま積むと
   // 1操作で履歴50件を食い潰して過去に戻れなくなる。連続操作は1件に合体させる。
   const gestureRef = useRef<{ name: string; t: number } | null>(null);
@@ -99,6 +106,9 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
     historyRef.current.push(layout);
     if (historyRef.current.length > 50) historyRef.current.shift();
     setHistLen(historyRef.current.length);
+    // 新しい編集が入ったら「やり直し」の分岐は捨てる（Undo→編集で未来が変わるため）
+    redoRef.current = [];
+    setRedoLen(0);
   };
   const patch = (p: Partial<LayoutProject>) => {
     gestureRef.current = null; // 単発操作。次の連続操作は新しい履歴になる
@@ -116,7 +126,25 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
   function undo() {
     const prev = historyRef.current.pop();
     setHistLen(historyRef.current.length);
-    if (prev) rawPatch(prev); // 履歴に積まずに丸ごと復元
+    if (prev) {
+      redoRef.current.push(layout); // いまの状態をやり直し側へ退避
+      if (redoRef.current.length > 50) redoRef.current.shift();
+      setRedoLen(redoRef.current.length);
+      gestureRef.current = null;
+      rawPatch(prev); // 履歴に積まずに丸ごと復元
+    }
+  }
+  function redo() {
+    const next = redoRef.current.pop();
+    setRedoLen(redoRef.current.length);
+    if (next) {
+      // pushHistory は redo を消してしまうため、ここでは undo 側へ直接積む
+      historyRef.current.push(layout);
+      if (historyRef.current.length > 50) historyRef.current.shift();
+      setHistLen(historyRef.current.length);
+      gestureRef.current = null;
+      rawPatch(next);
+    }
   }
   const [viewState, setView] = useState<View>({ tx: 40, ty: 40, zoom: 0.5 });
   // 通常はこの view を使う。draw だけは viewOverride で一時的に別ビューを描ける（PDFの全景撮影用）。
@@ -164,16 +192,18 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
     if (hasCandidates) sharedChangeOkRef.current = false;
   }, [hasCandidates]);
   /** 候補がある状態で既設を変更する前の確認。OKなら全候補を削除して true を返す。 */
-  function confirmSharedChange(): boolean {
+  async function confirmSharedChange(): Promise<boolean> {
     if (!hasCandidates || sharedChangeOkRef.current) return true;
     const n = candidateCount ?? 0;
-    if (
-      !confirm(
+    const ok = await confirmDlg({
+      title: "既設の変更",
+      message:
         `既設（地図・写真・校正・向き）を変更すると、検討候補${n ? `（${n}件）` : ""}が全て削除されます。\n` +
-          "いま画面に表示中の内容だけが残ります。続行しますか？"
-      )
-    )
-      return false;
+        "いま画面に表示中の内容だけが残ります。続行しますか？",
+      okLabel: "続行する",
+      danger: true,
+    });
+    if (!ok) return false;
     sharedChangeOkRef.current = true;
     clearCandidates?.();
     return true;
@@ -1190,15 +1220,23 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
       const p = screenToImage(sx, sy);
       const next = [...calibPts, p];
       if (next.length === 2) {
-        const m = prompt("この2点間の実際の距離 (m) を入力してください", "10");
-        const meters = m ? Number(m) : NaN;
-        if (meters > 0) {
-          patch({
-            calibration: { x1: next[0].x, y1: next[0].y, x2: next[1].x, y2: next[1].y, meters },
-          });
-        }
         setCalibPts([]);
         setMode("pan");
+        // 入力モーダル（0以下・非数はOK不可）。マウスハンドラ内なので then で受ける
+        void promptDlg({
+          title: "基準寸法の入力",
+          message: "この2点間の実際の距離 (m) を入力してください。",
+          defaultValue: "10",
+          numeric: true,
+          placeholder: "例: 10",
+        }).then((m) => {
+          const meters = m == null ? NaN : Number(m);
+          if (meters > 0) {
+            patch({
+              calibration: { x1: next[0].x, y1: next[0].y, x2: next[1].x, y2: next[1].y, meters },
+            });
+          }
+        });
       } else {
         setCalibPts(next);
       }
@@ -1571,11 +1609,11 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
    */
   function scanFromScreenRect(r: { x: number; y: number; w: number; h: number }) {
     if (!formPanelId) {
-      alert("先に下の「パネル」を選択してください");
+      flashMsg("⚠ 先に下の「パネル」を選択してください");
       return;
     }
     if (!layout.calibration) {
-      alert("スケール未設定です。地理院地図の取得か、基準寸法の設定を先に行ってください");
+      flashMsg("⚠ スケール未設定です。地理院地図の取得か、基準寸法の設定を先に行ってください");
       return;
     }
     const panel = panels.find((p) => p.id === formPanelId);
@@ -1585,7 +1623,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
     const pwM = formOrient === "portrait" ? widM : lenM; // 1枚の横幅(m)
     const phM = formOrient === "portrait" ? lenM : widM; // 1枚の高さ(m)
     if (pwM <= 0 || phM <= 0) {
-      alert("選択したパネルの寸法が未登録です");
+      flashMsg("⚠ 選択したパネルの寸法が未登録です");
       return;
     }
     // 画面px → メートル（zoom: 画面px/画像px、pixelsPerMeter: 画像px/m）
@@ -1658,7 +1696,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
   async function onUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!confirmSharedChange()) {
+    if (!(await confirmSharedChange())) {
       e.target.value = "";
       return;
     }
@@ -1677,7 +1715,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
         imageOpacity: 1,
       });
     } catch {
-      alert("画像の読み込みに失敗しました");
+      toast("画像の読み込みに失敗しました", "error");
     }
     e.target.value = "";
   }
@@ -1689,7 +1727,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
       setGsiMsg("住所を入力してください");
       return;
     }
-    if (!confirmSharedChange()) return;
+    if (!(await confirmSharedChange())) return;
     setGsiBusy(true);
     setGsiMsg("住所を検索中…");
     try {
@@ -1726,8 +1764,8 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
    * 画像を回転する。画面中心にある画像上の点を軸に回す（view を補正）ので、
    * 拡大中でも見ている被写体が画面外へ飛ばない。
    */
-  function setRotation(newDeg: number) {
-    if (!confirmSharedChange()) return;
+  async function setRotation(newDeg: number) {
+    if (!(await confirmSharedChange())) return;
     const c = canvasRef.current;
     const deg = ((newDeg % 360) + 360) % 360;
     if (!c) {
@@ -1789,7 +1827,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
       .join("");
     const w = window.open("", "_blank");
     if (!w) {
-      alert("ポップアップがブロックされました。許可してから再実行してください。");
+      toast("ポップアップがブロックされました。許可してから再実行してください。", "error");
       return;
     }
     w.document.write(
@@ -1805,9 +1843,9 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     w.document.close();
   }
 
-  function clearWiringOverrides() {
+  async function clearWiringOverrides() {
     if (!layout.wiringOverrides || Object.keys(layout.wiringOverrides).length === 0) return;
-    if (!confirm("結線の手編集をすべて消して自動割付に戻します。よろしいですか？")) return;
+    if (!(await confirmDlg({ title: "結線のリセット", message: "結線の手編集をすべて消して自動割付に戻します。よろしいですか？", okLabel: "戻す", danger: true }))) return;
     setWiringOverrides({});
   }
 
@@ -1891,7 +1929,7 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
   async function exportConstructionPdf() {
     const c = canvasRef.current;
     if (!c) {
-      alert("先に住所から地図を取得するか写真をアップロードしてください。");
+      toast("先に住所から地図を取得するか写真をアップロードしてください。", "warn");
       return;
     }
     const esc = (s: string) =>
@@ -2214,7 +2252,7 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
       flashMsg("✅ PDFを保存しました（ダウンロード）");
     } catch (e) {
       console.error(e);
-      alert("PDFの作成に失敗しました。もう一度お試しください。");
+      toast("PDFの作成に失敗しました。もう一度お試しください。", "error");
     } finally {
       document.body.removeChild(host);
     }
@@ -2222,7 +2260,7 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
 
   function addArray() {
     if (!formPanelId) {
-      alert("パネルを登録・選択してください");
+      toast("パネルを登録・選択してください", "warn");
       return;
     }
     const center = screenToImage(
@@ -2298,7 +2336,7 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
       }),
     });
   }
-  function deleteArray(id: string) {
+  async function deleteArray(id: string) {
     const a = layout.arrays.find((x) => x.id === id);
     if (!a) return;
     // ②では既設（全候補共通の実体）は削除禁止。候補切替時に refreshExistingMaster が
@@ -2307,41 +2345,41 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
       flashMsg("既設の区画は②では削除できません。この候補だけ外すなら「全部撤去」、実体を消すなら「①既設の設定」で削除してください。");
       return;
     }
-    if (!confirm(`この区画（${a.rows}行×${a.cols}列）を削除しますか？（「戻す」で復元可）`)) return;
+    if (!(await confirmDlg({ title: "区画の削除", message: `この区画（${a.rows}行×${a.cols}列）を削除しますか？（「戻す」で復元可）`, okLabel: "削除する", danger: true }))) return;
     patch({ arrays: layout.arrays.filter((x) => x.id !== id) });
     if (selectedId === id) setSelectedId(null);
   }
 
   /** 単独パネル（free panel）だけを全消去。Undoで戻せる。 */
-  function clearFreePanels() {
+  async function clearFreePanels() {
     if ((layout.freePanels?.length ?? 0) === 0) return;
-    if (!confirm(`単独パネル ${layout.freePanels?.length ?? 0} 枚をすべて消去します。よろしいですか？（「戻す」で復元可）`)) return;
+    if (!(await confirmDlg({ title: "単独パネルの全消去", message: `単独パネル ${layout.freePanels?.length ?? 0} 枚をすべて消去します。よろしいですか？（「戻す」で復元可）`, okLabel: "消去する", danger: true }))) return;
     patch({ freePanels: [] });
     setSelectedFreeId(null);
   }
 
   /** 配置した配列・単独パネル（＝画面上のグリッド線）を全消去。Undoで戻せる。
    *  ②では既設（流用マーク定義済み）の区画は守り、新設の配列・単独パネルだけを消す。 */
-  function clearAllArrays() {
+  async function clearAllArrays() {
     if (layout.arrays.length === 0 && (layout.freePanels?.length ?? 0) === 0) return;
     if (phase === "henkou") {
       const kept = layout.arrays.filter((a) => a.keepCells !== undefined);
       const delCount = layout.arrays.length - kept.length + (layout.freePanels?.length ?? 0);
       if (delCount === 0) {
-        alert("②で消去できるのは新設の配列・単独パネルだけです（既設の図面は「① 既設の設定」で）。");
+        toast("②で消去できるのは新設の配列・単独パネルだけです（既設の図面は「① 既設の設定」で）。", "warn");
         return;
       }
-      if (!confirm(`新設の配列・単独パネル（計${delCount}件）を消去します。既設はそのまま残ります。よろしいですか？（「戻す」で復元可）`)) return;
+      if (!(await confirmDlg({ title: "全消去（新設のみ）", message: `新設の配列・単独パネル（計${delCount}件）を消去します。既設はそのまま残ります。よろしいですか？（「戻す」で復元可）`, okLabel: "消去する", danger: true }))) return;
       patch({ arrays: kept, freePanels: [] });
     } else {
       // ①では既設（マーク定義済み）だけを消す。②の新設配列・単独パネルは候補の検討内容なので残す
       const keptNew = layout.arrays.filter((a) => a.keepCells === undefined);
       const delCount = layout.arrays.length - keptNew.length;
       if (delCount === 0) {
-        alert("消去できる既設の配列がありません。");
+        toast("消去できる既設の配列がありません。", "warn");
         return;
       }
-      if (!confirm(`既設の配列（${delCount}件）をすべて消去します。よろしいですか？（「戻す」で復元可）`)) return;
+      if (!(await confirmDlg({ title: "既設の全消去", message: `既設の配列（${delCount}件）をすべて消去します。よろしいですか？（「戻す」で復元可）`, okLabel: "消去する", danger: true }))) return;
       patch({ arrays: keptNew });
     }
     setSelectedId(null);
@@ -2350,7 +2388,7 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
 
   function addFreePanel() {
     if (!formPanelId) {
-      alert("パネルを登録・選択してください");
+      toast("パネルを登録・選択してください", "warn");
       return;
     }
     const center = screenToImage(
@@ -2458,17 +2496,17 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
   }
 
   /** いまの構成を「現状（基準）」として凍結保存する（現況＝既存配列の全数）。 */
-  function registerBaseline() {
+  async function registerBaseline() {
     // 流用マークのある配列＝既存。無ければ図面の全パネルを現状として登録する。
     let sum = summarizeLayout(layout, panels, "genkyo");
     if (sum.totalPanels === 0) sum = summarizeLayout(layout, panels, "kaishu");
     if (sum.totalPanels === 0) {
-      alert("配置がありません。図面にパネルを置くか、下の「現状を手入力」で入力してください。");
+      toast("配置がありません。図面にパネルを置くか、下の「現状を手入力」で入力してください。", "warn");
       return;
     }
     if (
       layout.baseline &&
-      !confirm("すでに基準が登録されています。今の構成で上書きしますか？")
+      !(await confirmDlg({ title: "基準の上書き", message: "すでに基準が登録されています。今の構成で上書きしますか？", okLabel: "上書きする" }))
     )
       return;
     // 数値と一緒に「既設図面の凍結コピー」も保存する＝本当の固定（壊れたら登録時点に戻せる）
@@ -2490,16 +2528,20 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
   }
 
   /** 既設の図面を「基準登録した時点」に戻す。既設マスタごと書き換えるため全候補に反映される。 */
-  function restoreExistingFromBaseline() {
+  async function restoreExistingFromBaseline() {
     const snap = layout.baseline?.arrays;
     if (!snap?.length) return;
     if (
-      !confirm(
-        "既設の図面を「現状を基準登録」した時点に戻します。\n" +
+      !(await confirmDlg({
+        title: "図面を登録時点に戻す",
+        message:
+          "既設の図面を「現状を基準登録」した時点に戻します。\n" +
           "①の既設（形・欠け・配置・型式）が登録時点に戻り、全候補に反映されます。\n" +
           "②の新設・撤去マークはそのまま残ります（この候補の流用指定は全部流用に戻ります）。\n" +
-          "よろしいですか？（「戻す」で取り消せます）"
-      )
+          "よろしいですか？（「戻す」で取り消せます）",
+        okLabel: "登録時点に戻す",
+        danger: true,
+      }))
     )
       return;
     const snapCopy: PanelArray[] = JSON.parse(JSON.stringify(snap));
@@ -2508,8 +2550,8 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     patch({ arrays: [...restored, ...news], existingArrays: snapCopy });
   }
 
-  function clearBaseline() {
-    if (!confirm("登録した基準を削除します。よろしいですか？（戻すで復元可）")) return;
+  async function clearBaseline() {
+    if (!(await confirmDlg({ title: "基準の削除", message: "登録した基準を削除します。よろしいですか？（戻すで復元可）", okLabel: "削除する", danger: true }))) return;
     patch({ baseline: null });
   }
 
@@ -2551,7 +2593,7 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
         items.push({ id: uid("lg"), color: "#38bdf8", label: `${v.name} ${v.w}W ${v.added}枚 新設 ${v.orient}` });
     }
     if (items.length === 0) {
-      alert("配列がありません。先にパネルを配置してください。");
+      toast("配列がありません。先にパネルを配置してください。", "warn");
       return;
     }
     patch({ legend: items });
@@ -2581,7 +2623,7 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     patch({ manualCurrent: manualCurrent.filter((m) => m.id !== id) });
   }
   /** 手入力の現状を「基準（現況）」として登録する。 */
-  function registerBaselineFromManual() {
+  async function registerBaselineFromManual() {
     const byModel = new Map<string, { count: number; kw: number }>();
     for (const m of manualCurrent) {
       if (m.count <= 0) continue;
@@ -2594,11 +2636,11 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     const byPanel = [...byModel.entries()].map(([model, v]) => ({ model, count: v.count, kw: v.kw }));
     const totalPanels = byPanel.reduce((s, b) => s + b.count, 0);
     if (totalPanels === 0) {
-      alert("枚数を入力してください。");
+      toast("枚数を入力してください。", "warn");
       return;
     }
     const totalKw = byPanel.reduce((s, b) => s + b.kw, 0);
-    if (layout.baseline && !confirm("既に基準が登録されています。手入力の内容で上書きしますか？")) return;
+    if (layout.baseline && !(await confirmDlg({ title: "基準の上書き", message: "既に基準が登録されています。手入力の内容で上書きしますか？", okLabel: "上書きする" }))) return;
     patch({ baseline: { totalPanels, totalKw, byPanel, registeredAt: Date.now() } });
     setManualMsg(`✓ 現状を基準として登録しました（${totalPanels.toLocaleString()}枚・${totalKw.toFixed(1)}kW）`);
   }
@@ -2709,8 +2751,8 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
             <div className="row" style={{ marginTop: 8 }}>
               <button
                 className={`btn small ${mode === "calibrate" ? "" : "secondary"}`}
-                onClick={() => {
-                  if (mode !== "calibrate" && !confirmSharedChange()) return;
+                onClick={async () => {
+                  if (mode !== "calibrate" && !(await confirmSharedChange())) return;
                   setMode(mode === "calibrate" ? "pan" : "calibrate");
                   setCalibPts([]);
                 }}
@@ -2718,7 +2760,7 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
                 {mode === "calibrate" ? "基準線：2点をクリック中…" : "基準寸法を設定"}
               </button>
               {layout.calibration && (
-                <button className="btn secondary small" onClick={() => { if (confirmSharedChange()) patch({ calibration: null }); }}>
+                <button className="btn secondary small" onClick={async () => { if (await confirmSharedChange()) patch({ calibration: null }); }}>
                   校正クリア
                 </button>
               )}
@@ -3011,8 +3053,8 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
           <span className="spacer" />
           <button
             className="btn small"
-            onClick={() => {
-              if (mode !== "calibrate" && !confirmSharedChange()) return;
+            onClick={async () => {
+              if (mode !== "calibrate" && !(await confirmSharedChange())) return;
               switchPhase("kisetsu");
               setMode("calibrate");
             }}
@@ -3380,6 +3422,14 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
               disabled={histLen === 0}
             >
               ↩ 戻す
+            </button>
+            <button
+              className="btn secondary small"
+              title="「戻す」を取り消してやり直す"
+              onClick={redo}
+              disabled={redoLen === 0}
+            >
+              ↪ やり直す
             </button>
             <button
               className="btn danger small"

@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { PanelSpec, PowerPlant } from "../types";
 import { uid } from "../store";
+import { useConfirm, useToast } from "./ui/dialogs";
 
 interface Props {
   store: {
@@ -36,6 +37,8 @@ function emptyPanel(): PanelSpec {
 export function PanelRegistry({ store, plants }: Props) {
   const [draft, setDraft] = useState<PanelSpec>(emptyPanel());
   const [editing, setEditing] = useState(false);
+  const confirmDlg = useConfirm();
+  const toast = useToast();
   // W単価（円/W）。Pmax×W単価＝1枚価格 を自動計算するための入力欄の値。
   const [wattPrice, setWattPrice] = useState<string>("");
 
@@ -90,7 +93,7 @@ export function PanelRegistry({ store, plants }: Props) {
 
   function submit() {
     if (!draft.model.trim()) {
-      alert("型番を入力してください");
+      toast("型番を入力してください", "warn");
       return;
     }
     store.upsert({
@@ -134,15 +137,18 @@ export function PanelRegistry({ store, plants }: Props) {
       .map((pl) => pl.name);
   }
 
-  function removePanel(p: PanelSpec) {
+  async function removePanel(p: PanelSpec) {
     const used = usedIn(p.id);
     if (used.length) {
-      alert(
-        `${p.model} は次の発電所で使用中のため削除できません：\n・${used.join("\n・")}\n\n先に図面・パワコン構成から外してください。`
-      );
+      await confirmDlg({
+        title: "削除できません",
+        message: `${p.model} は次の発電所で使用中のため削除できません：\n・${used.join("\n・")}\n\n先に図面・パワコン構成から外してください。`,
+        okLabel: "閉じる",
+        hideCancel: true,
+      });
       return;
     }
-    if (confirm(`${p.model} を削除しますか？`)) store.remove(p.id);
+    if (await confirmDlg({ title: "パネルの削除", message: `${p.model} を削除しますか？`, okLabel: "削除する", danger: true })) store.remove(p.id);
   }
 
   return (

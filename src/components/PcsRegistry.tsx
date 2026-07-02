@@ -2,6 +2,7 @@ import { useState } from "react";
 import type { PcsSpec, PowerPlant } from "../types";
 import { WARRANTY_OPTIONS } from "../types";
 import { uid } from "../store";
+import { useConfirm, useToast } from "./ui/dialogs";
 
 interface Props {
   store: {
@@ -36,6 +37,8 @@ function emptyPcs(): PcsSpec {
 export function PcsRegistry({ store, plants }: Props) {
   const [draft, setDraft] = useState<PcsSpec>(emptyPcs());
   const [editing, setEditing] = useState(false);
+  const confirmDlg = useConfirm();
+  const toast = useToast();
 
   const num =
     (key: keyof PcsSpec) =>
@@ -48,9 +51,9 @@ export function PcsRegistry({ store, plants }: Props) {
     (e: React.ChangeEvent<HTMLInputElement>) =>
       setDraft((d) => ({ ...d, [key]: e.target.value }));
 
-  function submit() {
+  async function submit() {
     if (!draft.model.trim()) {
-      alert("型番を入力してください");
+      toast("型番を入力してください", "warn");
       return;
     }
     // 空欄(undefined)のまま保存すると直列数計算が NaN になり、
@@ -69,10 +72,13 @@ export function PcsRegistry({ store, plants }: Props) {
     };
     if (!fixed.maxInputVoltageV || !fixed.mpptVoltageMaxV) {
       if (
-        !confirm(
-          "最大入力電圧 / MPPT電圧上限が未入力（0）です。\n" +
-            "このままだと直列数の電圧チェックが全ストリングに警告を出します。登録しますか？"
-        )
+        !(await confirmDlg({
+          title: "電圧仕様が未入力です",
+          message:
+            "最大入力電圧 / MPPT電圧上限が未入力（0）です。\n" +
+            "このままだと直列数の電圧チェックが全ストリングに警告を出します。登録しますか？",
+          okLabel: "登録する",
+        }))
       )
         return;
     }
@@ -90,15 +96,18 @@ export function PcsRegistry({ store, plants }: Props) {
       .map((pl) => pl.name);
   }
 
-  function removePcs(p: PcsSpec) {
+  async function removePcs(p: PcsSpec) {
     const used = usedIn(p.id);
     if (used.length) {
-      alert(
-        `${p.model} は次の発電所で使用中のため削除できません：\n・${used.join("\n・")}\n\n先にパワコン構成から外してください。`
-      );
+      await confirmDlg({
+        title: "削除できません",
+        message: `${p.model} は次の発電所で使用中のため削除できません：\n・${used.join("\n・")}\n\n先にパワコン構成から外してください。`,
+        okLabel: "閉じる",
+        hideCancel: true,
+      });
       return;
     }
-    if (confirm(`${p.model} を削除しますか？`)) store.remove(p.id);
+    if (await confirmDlg({ title: "パワコンの削除", message: `${p.model} を削除しますか？`, okLabel: "削除する", danger: true })) store.remove(p.id);
   }
 
   function edit(p: PcsSpec) {

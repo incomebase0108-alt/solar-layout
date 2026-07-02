@@ -287,3 +287,36 @@ details.fold[open] > summary { color: var(--accent); }
   .badge { border-color: #999; color: #000; }
   .warn-item { background: #fff8e1; color: #7a5b00; border-color: #c79100; }
 }
+
+/* ===== 共通ダイアログ（ui/dialogs.tsx）：トースト＋確認/入力モーダル ===== */
+.dlg-overlay {
+  position: fixed; inset: 0; z-index: 1000;
+  background: rgba(2, 6, 23, 0.6);
+  display: flex; align-items: center; justify-content: center;
+}
+.dlg-box {
+  background: var(--panel, #0f172a); color: inherit;
+  border: 1px solid rgba(148, 163, 184, 0.35);
+  border-radius: 10px; padding: 18px 20px;
+  min-width: 320px; max-width: 520px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.45);
+}
+.dlg-title { margin: 0 0 8px; font-size: 15px; }
+.dlg-message { white-space: pre-wrap; font-size: 13px; line-height: 1.7; }
+.dlg-input { width: 100%; margin-top: 10px; padding: 6px 8px; font-size: 14px; }
+.dlg-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+
+.toast-stack {
+  position: fixed; right: 16px; bottom: 16px; z-index: 1100;
+  display: flex; flex-direction: column; gap: 8px; max-width: 380px;
+}
+.toast {
+  padding: 10px 14px; border-radius: 8px; font-size: 13px; line-height: 1.5;
+  background: #1e293b; color: #e2e8f0;
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  box-shadow: 0 6px 24px rgba(0, 0, 0, 0.35);
+  animation: toast-in 0.15s ease-out;
+}
+.toast-warn { border-color: var(--warn); }
+.toast-error { border-color: var(--danger); background: #2b1216; }
+@keyframes toast-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }

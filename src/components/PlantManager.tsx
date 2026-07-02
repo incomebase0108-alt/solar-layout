@@ -1,6 +1,7 @@
 import { useState } from "react";
 import type { PowerPlant } from "../types";
 import { exportAll, importAll } from "../utils/backup";
+import { useConfirm, useToast } from "./ui/dialogs";
 
 interface Props {
   plants: PowerPlant[];
@@ -28,6 +29,8 @@ export function PlantManager({
 }: Props) {
   const [newName, setNewName] = useState("");
   const [query, setQuery] = useState("");
+  const confirmDlg = useConfirm();
+  const toast = useToast();
   const current = plants.find((p) => p.id === currentId);
 
   const q = query.trim().toLowerCase();
@@ -41,13 +44,19 @@ export function PlantManager({
     const file = e.target.files?.[0];
     e.target.value = "";
     if (!file) return;
-    if (!confirm("読込むと現在のデータ（マスタ・全発電所）が置き換わります。よろしいですか？")) return;
+    if (!(await confirmDlg({
+      title: "バックアップの読込",
+      message: "読込むと現在のデータ（マスタ・全発電所）が置き換わります。よろしいですか？",
+      okLabel: "読込む",
+      danger: true,
+    }))) return;
     try {
       await importAll(file);
+      // リロード前のトーストは見えないことがあるため、確実に伝わるようここは alert のまま
       alert("読込みました。画面を更新します。");
       window.location.reload();
     } catch (err) {
-      alert(err instanceof Error ? err.message : "読込に失敗しました。");
+      toast(err instanceof Error ? err.message : "読込に失敗しました。", "error");
     }
   }
 
@@ -142,10 +151,14 @@ export function PlantManager({
                     )}
                     <button
                       className="btn danger small"
-                      onClick={() =>
-                        confirm(`発電所「${p.name}」を削除しますか？図面も削除されます。`) &&
-                        deletePlant(p.id)
-                      }
+                      onClick={async () => {
+                        if (await confirmDlg({
+                          title: "発電所の削除",
+                          message: `発電所「${p.name}」を削除しますか？図面も削除されます。`,
+                          okLabel: "削除する",
+                          danger: true,
+                        })) deletePlant(p.id);
+                      }}
                     >
                       削除
                     </button>

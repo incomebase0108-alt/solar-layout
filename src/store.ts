@@ -56,6 +56,8 @@ function save<T>(key: string, value: T): void {
   } catch {
     // 容量超過などで保存に失敗すると、リロード時に最後に保存できた状態まで巻き戻る。
     // 黙って失敗すると気づけないため通知する（保存は頻発するので30秒に1回まで）。
+    // ※ここは React の外（ui/dialogs.tsx のトーストが使えない）かつデータ消失の重大警告
+    //   なので、意図的にネイティブ alert のまま残している。
     const now = Date.now();
     if (now - lastSaveAlertAt > 30_000) {
       lastSaveAlertAt = now;
