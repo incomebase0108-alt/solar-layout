@@ -7,6 +7,18 @@
 
 ---
 
+## 2026-07-02 23:55 — DESKTOP-L9CSJDA — claude/pcs-optimizer-overload
+- やったこと: **UX改善6フェーズ完了**（計7コミット f3c44b7〜6290233、全てPlaywright実機検証済み）。
+  1. PDF差分コミット（工事説明書②配列番号バッジ＋凡例表＋背景減光＋パワコン色■）
+  2. **②で既設の実体削除を禁止**（hoshiさん報告のデータ消失バグ。配列一覧は「全部撤去」に置換＋deleteArrayで二重ガード）
+  3. **ビルド復旧**: コスト改修WIPを完成（layoutCompose.ts切り出し＋CandidateCostInputs新構造化＋candidateCost.ts正式追加）。tsc 16エラー→0、テスト80→99件
+  4. **④コスト手入力を候補ごとに永続化**（切替・リロードで消えない。workingPlan/loadCandidateにactiveCost合流＋saveCostミラー保存。extraCostLines再計算バグも修正）
+  5. **単価0円警告**: 単価未登録パワコンの黙殺を可視化（missingPcsPrices＋パワコン登録への誘導ボタン）
+  6. 迷子防止（スケール未校正警告バナー→①校正モード誘導・EmptyState・numOrガード）
+  7. **ダイアログ刷新**: alert/confirm/prompt 41箇所→ui/dialogs.tsx（Toast/Confirm/Prompt、依存追加なし）。store.ts保存失敗alertのみ意図的にnative維持。図面に**Redo（↪やり直す）**追加
+- 決めたこと: 既設の実体削除は①フェーズ限定（②は可逆な撤去マークのみ）。コスト手入力は候補単位保存＋空欄=自動導出フォールバック。「反映」ボタンは保存値も消して自動追従へ復帰。
+- 次の一手: OMRON等のseed単価はhoshiさんから実勢価格をもらってstore.tsのSEED_PCSに登録（それまでは0円警告が守る）。b.txt/e.txt/probe_defs.txt（デバッグ残骸）はhoshiさん確認後に削除。タッチ/タブレット対応は今回見送り（要望あれば別途）。
+
 ## 2026-06-28 19:00 — DESKTOP-L9CSJDA — main
 - やったこと: パワコン構成の自動最適化を全面刷新（`src/calc/pcsOptimize.ts`＋`PcsComposer.tsx`）。目的＝各台の過積載率(DC/定格)を揃える＋全パネル使い切り。台数を型式のDC量に比例配分→型式内で直列均等(W差を直列長で吸収)→端数は直列+1で吸収→残れば⚠強制割当(マルチ機の空きMPPTのみ・電圧上限厳守)。非マルチ機は1MPPTでも±1直の並列混在可(例26枚=7直×2並+6直×2並)。検証は「並列合計≤上限」で判定。
 - 追加: **おすすめ3案**(影に強い/標準/配線シンプル＝`pref` shade/balanced/wiring、`optimizeIntoUnitsPatterns`)、1案/2案/3案を横並び比較→選択適用。設計最低気温の既定を−3℃(西尾市基準・`DEFAULT_CONDITIONS`)＋StringCalculatorにヒント。
