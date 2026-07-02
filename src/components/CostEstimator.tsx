@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import type { PanelSpec, PcsSpec, PowerPlant, CostRates, ExtraCostLine, CandidateCostInputs } from "../types";
 import { estimateCost, estimateAfterGeneration, estimateRoi, type NewPanelLine } from "../calc/cost";
 import { arrayCellStats } from "../calc/layoutCount";
+import { missingPcsPrices } from "../calc/candidateCost";
 import { uid } from "../store";
 
 interface Props {
@@ -11,6 +12,8 @@ interface Props {
   costRates: CostRates;
   setCostRates: (r: CostRates) => void;
   updatePlant: (id: string, patch: Partial<Omit<PowerPlant, "id" | "layout" | "wiring">>) => void;
+  /** 「パワコン登録」タブ等への誘導（単価未登録の警告から使う） */
+  goToTab?: (tab: string) => void;
 }
 
 const yen = (n: number) => "¥" + Math.round(n).toLocaleString("ja-JP");
@@ -19,7 +22,7 @@ interface EditLine extends NewPanelLine {
   id: string;
 }
 
-export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates, updatePlant }: Props) {
+export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates, updatePlant, goToTab }: Props) {
   // ===== 現況レイアウトから導出（改修案ベース） =====
   const derived = useMemo(() => {
     // 新設パネル（流用マーク無しの配列＝新設 ＋ 単独パネル）を型式ごとに集計
@@ -301,6 +304,26 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
 
       <div className="card">
         <h2>パワコン</h2>
+        {(() => {
+          // 単価未登録＝?? 0 で黙って0円計上される事故の可視化。
+          // 手入力単価で上書き済みならユーザーが対処済みとみなし表示しない。
+          if (pcsMode !== "new" || newPcsCount <= 0) return null;
+          const missing = pcsUnitYen === "" ? missingPcsPrices(plant.pcsUnits, pcsList) : [];
+          const zeroCounted = effPcsUnit === 0;
+          if (missing.length === 0 && !zeroCounted) return null;
+          return (
+            <div className="warn-item" style={{ marginBottom: 8, color: "var(--warn)", borderColor: "var(--warn)" }}>
+              ⚠ 単価未登録のパワコンが0円で計上されています
+              {missing.length > 0 ? `：${missing.join("、")}` : ""}。
+              下の「パワコン単価」に直接入力するか、マスタに単価を登録してください。
+              {goToTab && (
+                <button className="btn secondary small" style={{ marginLeft: 8 }} onClick={() => goToTab("pcs")}>
+                  パワコン登録で単価を入力 →
+                </button>
+              )}
+            </div>
+          );
+        })()}
         <div className="form-grid">
           <div className="field">
             <label>パワコン</label>

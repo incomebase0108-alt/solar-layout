@@ -182,6 +182,7 @@ export default function App() {
           costRates={costStore.costRates}
           setCostRates={costStore.setCostRates}
           updatePlant={plantStore.updatePlant}
+          goToTab={(t) => setTab(t as Tab)}
         />
       )}
       {tab === "panel" && <PanelRegistry store={panelStore} plants={plantStore.plants} />}

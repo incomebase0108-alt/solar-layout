@@ -100,6 +100,25 @@ export function deriveCostInputs(
   return { newLines, newTotal, removedExisting, keptKw, beforeKw, newPcs };
 }
 
+/**
+ * パワコン構成のうち「新設なのに単価未登録」の機種名一覧（重複なし）。
+ * 単価未登録は ?? 0 で黙って0円計上されるため、UI側の警告表示に使う。
+ */
+export function missingPcsPrices(pcsUnits: PcsUnitLine[] | undefined, pcsList: PcsSpec[]): string[] {
+  const names = new Set<string>();
+  for (const u of pcsUnits ?? []) {
+    const eff = u.kind ?? "new"; // 区分は台ごと。未指定は新設扱い（コスト計上対象）
+    if (eff !== "new") continue;
+    const pcs = pcsList.find((p) => p.id === u.pcsId);
+    if (!pcs) {
+      names.add("マスタ未登録の機種");
+    } else if (pcs.unitPriceYen == null) {
+      names.add(`${pcs.maker} ${pcs.model}`);
+    }
+  }
+  return [...names];
+}
+
 /** 監視装置の表示名（CostEstimator と一致させる）。 */
 function loggerLabelOf(t: CandidateCostInputs["loggerType"]): string {
   return t === "full"
