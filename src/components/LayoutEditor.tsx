@@ -2301,18 +2301,10 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
   function deleteArray(id: string) {
     const a = layout.arrays.find((x) => x.id === id);
     if (!a) return;
-    // ②から既設区画を削除する場合は、既設＝全候補共通の実体が消えることを確認してから実行する
+    // ②では既設（全候補共通の実体）は削除禁止。候補切替時に refreshExistingMaster が
+    // 作業コピーからマスタを作り直すため、②で実体を消すと全候補から現況が消えて戻せなくなる。
     if (phase === "henkou" && a.keepCells !== undefined) {
-      if (
-        !confirm(
-          `この区画（${a.rows}行×${a.cols}列）は既設です。削除すると既設の図面（全候補共通）から消えます。\n` +
-            "この候補だけで外したい場合はキャンセルして「撤去」を使ってください。\n" +
-            "既設ごと削除しますか？（「戻す」で復元可）"
-        )
-      )
-        return;
-      patch({ arrays: layout.arrays.filter((x) => x.id !== id) });
-      if (selectedId === id) setSelectedId(null);
+      flashMsg("既設の区画は②では削除できません。この候補だけ外すなら「全部撤去」、実体を消すなら「①既設の設定」で削除してください。");
       return;
     }
     if (!confirm(`この区画（${a.rows}行×${a.cols}列）を削除しますか？（「戻す」で復元可）`)) return;
@@ -3834,7 +3826,18 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
                           >
                             編集
                           </button>
-                          <button className="btn danger small" onClick={(e) => { e.stopPropagation(); deleteArray(a.id); }}>削除</button>
+                          {phase === "henkou" && a.keepCells !== undefined ? (
+                            // 既設は②では実体削除させない（全候補共通のため）。代わりに撤去マークへ誘導
+                            <button
+                              className="btn secondary small"
+                              title="既設は②では削除できません。この候補から外すには全部撤去（可逆）を使います。実体の削除は①既設の設定で。"
+                              onClick={(e) => { e.stopPropagation(); setAllRemoved(a.id, true); }}
+                            >
+                              全部撤去
+                            </button>
+                          ) : (
+                            <button className="btn danger small" onClick={(e) => { e.stopPropagation(); deleteArray(a.id); }}>削除</button>
+                          )}
                         </div>
                       </td>
                     </tr>
