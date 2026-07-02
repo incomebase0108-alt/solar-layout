@@ -732,6 +732,8 @@ export function usePlants() {
       wiringOverrides: pl.layout.wiringOverrides,
       legend: pl.layout.legend,
       pcsUnits: pl.pcsUnits,
+      // 概算コストの手入力（activeCost＝作業コピー）も候補ごとに保存する
+      cost: pl.activeCost,
     });
   };
 
@@ -776,6 +778,7 @@ export function usePlants() {
         legend: cc.legend,
       },
       pcsUnits: cc.pcsUnits,
+      activeCost: cc.cost,
       currentCandidateId: cc.id,
     };
   };
@@ -880,6 +883,7 @@ export function usePlants() {
                 legend: undefined,
               },
               pcsUnits: undefined,
+              activeCost: undefined,
               candidates: undefined,
             };
           }

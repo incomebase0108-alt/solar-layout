@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import type { PanelSpec, PcsSpec, PowerPlant, CostRates, ExtraCostLine } from "../types";
+import type { PanelSpec, PcsSpec, PowerPlant, CostRates, ExtraCostLine, CandidateCostInputs } from "../types";
 import { estimateCost, estimateAfterGeneration, estimateRoi, type NewPanelLine } from "../calc/cost";
 import { arrayCellStats } from "../calc/layoutCount";
 import { uid } from "../store";
@@ -111,13 +111,34 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
   const derivedPcsUnit = derived.newPcs > 0 ? Math.round(derived.newPcsYen / derived.newPcs) : pcs?.unitPriceYen ?? 0;
   const effPcsUnit = pcsUnitYen === "" ? derivedPcsUnit : pcsUnitYen;
 
-  /** 現況レイアウトの数字を編集欄に反映する。 */
+  // ===== 手入力の書き戻し（候補ごとに保存） =====
+  // ローカル state は即時表示用、activeCost は永続化用のミラー。候補切替・リロードでも
+  // ac.* から初期値が復元される。undefined を保存したキーは自動導出フォールバックに戻る。
+  const saveCost = (patch: Partial<CandidateCostInputs>) =>
+    updatePlant(plant.id, { activeCost: { ...(plant.activeCost ?? {}), ...patch } });
+  const persistLines = (next: EditLine[]) => {
+    setLines(next);
+    saveCost({ panelLines: next.map((l) => ({ label: l.label, w: l.w, count: l.count, unitYen: l.unitYen })) });
+  };
+  const changeRemovedDisposal = (v: number) => { setRemovedDisposal(v); saveCost({ removedDisposal: v }); };
+  const changeRemovedStock = (v: number) => { setRemovedStock(v); saveCost({ removedStock: v }); };
+  const changePcsMode = (v: "keep" | "new") => { setPcsMode(v); saveCost({ pcsMode: v }); };
+  const changePcsId = (v: string) => { setPcsId(v); setPcsUnitYen(""); saveCost({ pcsId: v, pcsUnitYen: undefined }); };
+  const changeNewPcsCount = (v: number) => { setNewPcsCount(v); saveCost({ newPcsCount: v }); };
+  const changeRemovedPcsCount = (v: number) => { setRemovedPcsCount(v); saveCost({ removedPcsCount: v }); };
+  const changePcsUnitYen = (v: number | "") => { setPcsUnitYen(v); saveCost({ pcsUnitYen: v === "" ? undefined : v }); };
+  const changeAfterGenOverride = (v: number | "") => { setAfterGenOverride(v); saveCost({ afterGenOverride: v === "" ? undefined : v }); };
+  const changeLoggerType = (v: "none" | "full" | "lite") => { setLoggerType(v); saveCost({ loggerType: v }); };
+  const changeLoggerUnitYen = (v: number | "") => { setLoggerUnitYen(v); saveCost({ loggerUnitYen: v === "" ? undefined : v }); };
+
+  /** 現況レイアウトの数字を編集欄に反映する（保存値も消して自動追従に戻す）。 */
   function applyFromLayout() {
     setLines(derived.newLines.map((l) => ({ id: uid("cl"), label: l.label, w: l.w, count: l.count, unitYen: l.unitYen })));
     setRemovedDisposal(derived.removedExisting);
     setRemovedStock(0);
     setNewPcsCount(derived.newPcs);
     setPcsMode(derived.newPcs > 0 ? "new" : "keep");
+    saveCost({ panelLines: undefined, removedDisposal: undefined, removedStock: undefined, newPcsCount: undefined, pcsMode: undefined });
   }
 
   // ===== その他費用（任意・発電所ごとに保存） =====
@@ -148,7 +169,7 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
         })),
         rates: costRates,
       }),
-    [lines, removedDisposal, removedStock, pcsMode, newPcsCount, effPcsUnit, removedPcsCount, loggerType, loggerUnitYen, costRates, plant.extraCostLines]
+    [lines, removedDisposal, removedStock, pcsMode, newPcsCount, effPcsUnit, removedPcsCount, loggerType, loggerUnitYen, costRates, extraCostLines]
   );
 
   // ===== 現況との相違チェック =====
@@ -158,9 +179,9 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
   const setRate = (k: keyof CostRates) => (e: React.ChangeEvent<HTMLInputElement>) =>
     setCostRates({ ...costRates, [k]: Number(e.target.value) });
   const updateLine = (id: string, patch: Partial<EditLine>) =>
-    setLines(lines.map((l) => (l.id === id ? { ...l, ...patch } : l)));
-  const removeLine = (id: string) => setLines(lines.filter((l) => l.id !== id));
-  const addLine = () => setLines([...lines, { id: uid("cl"), label: panels[0] ? `${panels[0].maker} ${panels[0].model}` : "新パネル", w: panels[0]?.pmaxW ?? 0, count: 0, unitYen: panels[0]?.unitPriceYen ?? 0 }]);
+    persistLines(lines.map((l) => (l.id === id ? { ...l, ...patch } : l)));
+  const removeLine = (id: string) => persistLines(lines.filter((l) => l.id !== id));
+  const addLine = () => persistLines([...lines, { id: uid("cl"), label: panels[0] ? `${panels[0].maker} ${panels[0].model}` : "新パネル", w: panels[0]?.pmaxW ?? 0, count: 0, unitYen: panels[0]?.unitPriceYen ?? 0 }]);
 
   // ===== 費用対効果 =====
   const newKw = lines.reduce((s, l) => s + (l.count * l.w) / 1000, 0);
@@ -263,12 +284,12 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
         <div className="form-grid">
           <div className="field">
             <label>処分する枚数</label>
-            <input type="number" min={0} value={removedDisposal} onChange={(e) => setRemovedDisposal(Number(e.target.value) || 0)} />
+            <input type="number" min={0} value={removedDisposal} onChange={(e) => changeRemovedDisposal(Number(e.target.value) || 0)} />
             <div className="hint">撤去工事費＋処分費がかかる</div>
           </div>
           <div className="field">
             <label>在庫に回す枚数</label>
-            <input type="number" min={0} value={removedStock} onChange={(e) => setRemovedStock(Number(e.target.value) || 0)} />
+            <input type="number" min={0} value={removedStock} onChange={(e) => changeRemovedStock(Number(e.target.value) || 0)} />
             <div className="hint">撤去工事費のみ（処分費なし）</div>
           </div>
           <div className="field">
@@ -283,7 +304,7 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
         <div className="form-grid">
           <div className="field">
             <label>パワコン</label>
-            <select value={pcsMode} onChange={(e) => setPcsMode(e.target.value as "keep" | "new")}>
+            <select value={pcsMode} onChange={(e) => changePcsMode(e.target.value as "keep" | "new")}>
               <option value="keep">既設流用（コストなし）</option>
               <option value="new">新設</option>
             </select>
@@ -292,23 +313,23 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
             <>
               <div className="field">
                 <label>機種（単価参照）</label>
-                <select value={pcsId} onChange={(e) => { setPcsId(e.target.value); setPcsUnitYen(""); }}>
+                <select value={pcsId} onChange={(e) => changePcsId(e.target.value)}>
                   {pcsList.map((p) => (<option key={p.id} value={p.id}>{p.maker} {p.model}（{p.ratedPowerKw}kW）</option>))}
                 </select>
               </div>
               <div className="field">
                 <label>新設台数</label>
-                <input type="number" min={0} value={newPcsCount} onChange={(e) => setNewPcsCount(Number(e.target.value) || 0)} />
+                <input type="number" min={0} value={newPcsCount} onChange={(e) => changeNewPcsCount(Number(e.target.value) || 0)} />
               </div>
               <div className="field">
                 <label>パワコン単価 (円/台)</label>
-                <input type="number" min={0} placeholder={pcs?.unitPriceYen ? `マスタ: ${pcs.unitPriceYen}` : "未設定"} value={pcsUnitYen} onChange={(e) => setPcsUnitYen(e.target.value === "" ? "" : Number(e.target.value))} />
+                <input type="number" min={0} placeholder={pcs?.unitPriceYen ? `マスタ: ${pcs.unitPriceYen}` : "未設定"} value={pcsUnitYen} onChange={(e) => changePcsUnitYen(e.target.value === "" ? "" : Number(e.target.value))} />
               </div>
             </>
           )}
           <div className="field">
             <label>既設パワコン 撤去台数</label>
-            <input type="number" min={0} value={removedPcsCount} onChange={(e) => setRemovedPcsCount(Number(e.target.value) || 0)} />
+            <input type="number" min={0} value={removedPcsCount} onChange={(e) => changeRemovedPcsCount(Number(e.target.value) || 0)} />
           </div>
         </div>
       </div>
@@ -318,7 +339,7 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
         <div className="form-grid">
           <div className="field">
             <label>使用する監視装置</label>
-            <select value={loggerType} onChange={(e) => setLoggerType(e.target.value as "none" | "full" | "lite")}>
+            <select value={loggerType} onChange={(e) => changeLoggerType(e.target.value as "none" | "full" | "lite")}>
               <option value="none">なし（使用しない）</option>
               <option value="full">SmartLogger 3000A（通常版）</option>
               <option value="lite">SmartLogger 3000A Lite版</option>
@@ -333,7 +354,7 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
                 min={0}
                 placeholder="単価を入力"
                 value={loggerUnitYen}
-                onChange={(e) => setLoggerUnitYen(e.target.value === "" ? "" : Number(e.target.value))}
+                onChange={(e) => changeLoggerUnitYen(e.target.value === "" ? "" : Number(e.target.value))}
               />
             </div>
           )}
@@ -439,7 +460,7 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
           <div className="field"><label>現在の年間発電量 (kWh/年)</label><input type="number" value={plant.annualGenerationKwh ?? ""} onChange={setPlantNum("annualGenerationKwh")} /></div>
           <div className="field">
             <label>変更後の年間発電量 (kWh/年)</label>
-            <input type="number" placeholder={`自動推定: ${Math.round(estAfterKwh).toLocaleString()}`} value={afterGenOverride} onChange={(e) => setAfterGenOverride(e.target.value === "" ? "" : Number(e.target.value))} />
+            <input type="number" placeholder={`自動推定: ${Math.round(estAfterKwh).toLocaleString()}`} value={afterGenOverride} onChange={(e) => changeAfterGenOverride(e.target.value === "" ? "" : Number(e.target.value))} />
             <div className="hint">
               {derived.beforeKw > 0
                 ? `空欄なら容量比（${derived.beforeKw.toFixed(1)}→${afterKw.toFixed(1)}kW）で自動推定`
