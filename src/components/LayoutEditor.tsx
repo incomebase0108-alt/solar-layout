@@ -3,7 +3,7 @@ import type { PanelSpec, LayoutProject, PanelArray, ShadowZone, FreePanel, Legen
 import { cellKey, arrayGaps, DEFAULT_CONDITIONS } from "../types";
 import { shadedCellKeys, pointInZones } from "../calc/shadow";
 import { summarizeLayout, arrayCellStats } from "../calc/layoutCount";
-import { assignWiring, type WiringAssignResult } from "../calc/wiringAssign";
+import { assignWiring, pcsColor, type WiringAssignResult } from "../calc/wiringAssign";
 import { calcStringSizing } from "../calc/stringSizing";
 import { fileToScaledDataUrl } from "../utils/image";
 import { geocodeAddress, buildSeamlessPhoto, calibrationFromScale } from "../utils/gsiMap";
@@ -465,7 +465,7 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
   );
 
   // --- 描画 ---
-  const draw = useCallback((wiringOverride?: WiringAssignResult | null, phaseOverride?: "kisetsu" | "henkou", viewOverride?: View) => {
+  const draw = useCallback((wiringOverride?: WiringAssignResult | null, phaseOverride?: "kisetsu" | "henkou", viewOverride?: View, opts?: { dimBg?: boolean; badgeNumberById?: Record<string, number> }) => {
     const c = canvasRef.current;
     if (!c) return;
     const ctx = c.getContext("2d");
@@ -492,7 +492,10 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
 
     const img = imgRef.current;
     if (img) {
-      ctx.globalAlpha = layout.imageOpacity;
+      // 改修後(henkou)のPDF出力時だけ背景を薄く描いてパネルを際立たせる（dimBg）。
+      // 画面表示・①改修前・③配線図は opts 無し＝従来の濃さのまま。
+      const alpha = opts?.dimBg && phv === "henkou" ? layout.imageOpacity * 0.35 : layout.imageOpacity;
+      ctx.globalAlpha = alpha;
       ctx.drawImage(img, 0, 0);
       ctx.globalAlpha = 1;
     }
@@ -732,6 +735,36 @@ export function LayoutEditor({ panels, layout, patch: rawPatch, setImage, defaul
       ctx.setLineDash([6, 4]);
       ctx.strokeRect(scanDraft.x, scanDraft.y, scanDraft.w, scanDraft.h);
       ctx.setLineDash([]);
+    }
+
+    // 配列番号バッジ（工事説明書PDF②専用：opts.badgeNumberById）。
+    // ここは既に画面座標（setTransform でリセット済）。番号は呼び出し側（②凡例）が
+    // 「改修後に残る配列だけ」を採番したマップで渡す＝凡例と完全一致。全撤去の配列は
+    // マップに無い＝バッジを描かない。固定pxサイズなので縮小ビューでも読める。
+    const badgeMap = opts?.badgeNumberById;
+    if (badgeMap) {
+      const cos = Math.cos(rot), sin = Math.sin(rot);
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      for (const a of layout.arrays) {
+        const n = badgeMap[a.id];
+        if (n == null) continue; // 改修後に残らない配列はバッジ無し
+        // 配列原点(画像座標)→画面座標（draw内ローカル view を使用＝PDFの fitView に追従）
+        const rx = cos * a.posXpx - sin * a.posYpx;
+        const ry = sin * a.posXpx + cos * a.posYpx;
+        const sx = view.tx + view.zoom * rx;
+        const sy = view.ty + view.zoom * ry;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 13, 0, Math.PI * 2);
+        ctx.fillStyle = "#0b1220";
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = "#ffffff";
+        ctx.stroke();
+        ctx.fillStyle = "#ffffff";
+        ctx.font = "bold 15px sans-serif";
+        ctx.fillText(String(n), sx, sy);
+      }
     }
   }, [view, rot, layout, selectedId, selectedFreeId, calibPts, shadowDraft, scanDraft, wiring, showW, arrayPanelPx, freePanelPx, phase, mode, selSets]);
 
@@ -1868,11 +1901,41 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     // （PDFボタンは②変更の検討にあるため常に henkou）に依存せず確実に描き分ける。
     // （以前は phase を切り替えず draw を2回呼ぶだけだったため、「改修前」ラベルの
     //   ページに改修後レイアウトが描かれ、ラベルと中身がずれていた。）
+    // ②改修後の配列番号採番（撤去除外・既設は流用のみ）。バッジと凡例で同じマップを使う。
+    // 改修後の枚数なので「撤去(removed)は数えない／既設配列は流用(keep)セルのみ」。
+    // 欠け除外＋セル単位の型式上書き(cellPanels)も考慮。合計は arrayCountByMode("kaishu") と一致。
+    const kaishuTypes = (a: PanelArray): Map<string, number> => {
+      const inGrid = (k: string) => {
+        const [r, cc] = k.split(",").map(Number);
+        return r >= 0 && cc >= 0 && r < a.rows && cc < a.cols;
+      };
+      const missing = new Set((a.missingCells ?? []).filter(inGrid));
+      const removed = new Set((a.removedCells ?? []).filter((k) => inGrid(k) && !missing.has(k)));
+      const keepSet = new Set((a.keepCells ?? []).filter((k) => inGrid(k) && !missing.has(k)));
+      const hasKeep = keepSet.size > 0; // 既設配列（流用マークあり）
+      const m = new Map<string, number>();
+      for (let r = 0; r < a.rows; r++)
+        for (let col = 0; col < a.cols; col++) {
+          const k = cellKey(r, col);
+          if (missing.has(k) || removed.has(k)) continue; // 欠け・撤去は改修後に含めない
+          if (hasKeep && !keepSet.has(k)) continue; // 既設配列は流用セルのみ
+          const pid = a.cellPanels?.[k] ?? a.panelId; // セル単位の型式上書きを優先
+          m.set(pid, (m.get(pid) ?? 0) + 1);
+        }
+      return m;
+    };
+    // 改修後に残る配列だけを対象に採番（全撤去＝0枚の配列は除外＝凡例にもバッジにも出さない）。
+    const kaishuArrays = layout.arrays
+      .map((a) => ({ a, types: kaishuTypes(a) }))
+      .filter((x) => x.types.size > 0);
+    const badgeNumberById: Record<string, number> = {};
+    kaishuArrays.forEach((x, i) => { badgeNumberById[x.a.id] = i + 1; });
+
     // 図面は現在の表示ではなく「全景が収まるビュー」で撮る（上部などの欠け防止）。3枚とも同じ枠で統一。
     const fitView = computePdfFitView() ?? undefined;
     draw(null, "kisetsu", fitView); // ① 改修前（既設のみ・満数）
     const imgBefore = c.toDataURL("image/jpeg", 0.9);
-    draw(null, "henkou", fitView); // ② 改修後レイアウト（結線なし）
+    draw(null, "henkou", fitView, { dimBg: true, badgeNumberById }); // ② 改修後（背景薄め＋配列番号バッジ）
     const imgAfter = c.toDataURL("image/jpeg", 0.9);
     const wiringOn = assignWiring(layout, panels, pcsUnits ?? [], layout.wiringOverrides);
     draw(wiringOn, "henkou", fitView); // ③ 配線図（結線・パワコン割付）
@@ -1972,8 +2035,10 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
         totalDc += unitDcKw;
         totalCells += unitCells;
         if (kind === "existing") { exNo++; exAc += ac; } else { newNo++; newAc += ac; }
-        listRows += `<tr><td>#${no}</td><td>${kindLabel}</td><td>${esc(pcsName)}</td><td style="text-align:right">${ac.toFixed(2)}</td><td style="text-align:right">${unitDcKw.toFixed(2)}</td><td style="text-align:right">${unitCells}</td><td style="${ovStyle}">${ovCell}</td><td>${esc(u.note ?? "")}</td></tr>`;
-        pcsRows += `<tr><td>#${no}</td><td>${kindLabel}</td><td>${pcsCell}</td><td>${str}</td><td>${veCol}</td><td style="text-align:right">${ampCol}</td><td>${judgeCol}</td></tr>`;
+        // #欄に③配線図と同じパワコン色の■目印を付ける（pcsColor(no) は配線図の pcsNo と一致）。
+        const noCell = `<span style="color:${pcsColor(no)};font-size:15px">■</span> #${no}`;
+        listRows += `<tr><td style="white-space:nowrap">${noCell}</td><td>${kindLabel}</td><td>${esc(pcsName)}</td><td style="text-align:right">${ac.toFixed(2)}</td><td style="text-align:right">${unitDcKw.toFixed(2)}</td><td style="text-align:right">${unitCells}</td><td style="${ovStyle}">${ovCell}</td><td>${esc(u.note ?? "")}</td></tr>`;
+        pcsRows += `<tr><td style="white-space:nowrap">${noCell}</td><td>${kindLabel}</td><td>${pcsCell}</td><td>${str}</td><td>${veCol}</td><td style="text-align:right">${ampCol}</td><td>${judgeCol}</td></tr>`;
       }
     }
     const totalOverload = totalAc > 0 ? (totalDc / totalAc) * 100 : 0;
@@ -2014,6 +2079,31 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
     const breakdownAfterHtml = breakdownTable("改修後（改修案）", summarizePanelLegend(false));
     const today = new Date().toISOString().slice(0, 10);
 
+    // ②改修後ページ用：配列番号 → 型式・区分・枚数・向き の凡例（図の番号バッジ badgeNumberById と一致）。
+    let arrLegendRows = kaishuArrays
+      .map((x, i) => {
+        const a = x.a;
+        const kind = arrayCellStats(a).marked ? "既設" : "新設";
+        const ori = a.orientation === "portrait" ? "縦" : "横";
+        const types = [...x.types.entries()].map(([pid, n]) => ({
+          model: panels.find((p) => p.id === pid)?.model ?? "—",
+          n,
+        }));
+        const modelCol = types.map((t) => esc(t.model)).join("<br>");
+        const cntCol = types.map((t) => `${t.n}枚`).join("<br>");
+        return `<tr><td style="text-align:center">${i + 1}</td><td>${modelCol}</td><td>${kind}</td><td style="text-align:right">${cntCol}</td><td style="text-align:center">${ori}</td></tr>`;
+      })
+      .join("");
+    // 単独パネル（番号バッジ対象外）は型式別にまとめて補足行を追加。
+    const freeByModel = new Map<string, number>();
+    for (const f of layout.freePanels ?? []) {
+      const model = panels.find((p) => p.id === f.panelId)?.model ?? "—";
+      freeByModel.set(model, (freeByModel.get(model) ?? 0) + 1);
+    }
+    for (const [model, n] of freeByModel) {
+      arrLegendRows += `<tr><td style="text-align:center">—</td><td>${esc(model)}（単独）</td><td>新設</td><td style="text-align:right">${n}枚</td><td style="text-align:center">—</td></tr>`;
+    }
+
     // 各ページのHTML（A4横＝1123×794px相当で組み、html2canvasで画像化してjsPDFに貼る）。
     const pagesHtml = `
 <div class="page">
@@ -2052,6 +2142,11 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
   <h2>② 改修後の図面（改修案レイアウト）</h2>
   <img src="${imgAfter}"/>
   <div class="lg">${legendAfterHtml}</div>
+  <table style="font-size:13px;margin-top:8px">
+    <tr><th style="text-align:center">No</th><th>型式</th><th>区分</th><th style="text-align:right">枚数</th><th style="text-align:center">向き</th></tr>
+    ${arrLegendRows || '<tr><td colspan="5">配列がありません。</td></tr>'}
+  </table>
+  <div class="lg" style="font-size:12px">図面上の番号 ①②③… が下表の No に対応します（背景写真は見やすさのため淡く表示）。</div>
 </div>
 
 <div class="page">
