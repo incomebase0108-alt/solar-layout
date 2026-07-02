@@ -9,16 +9,14 @@ import type {
   WiringPlan,
   CostRates,
   PlanCandidate,
-  PanelArray,
-  ExistingArrayMarks,
 } from "./types";
 import {
   DEFAULT_CONDITIONS,
   EMPTY_LAYOUT,
   EMPTY_WIRING,
   DEFAULT_COST_RATES,
-  cellKey,
 } from "./types";
+import { splitWorkingArrays, composeWorkingArrays } from "./calc/layoutCompose";
 
 // ============================================================
 // LocalStorage ベースの簡易永続化ストア
@@ -533,57 +531,8 @@ function clonePlanData<T>(v: T): T {
   return JSON.parse(JSON.stringify(v));
 }
 
-/** 配列の全セルキー（マークの無い既設＝全部流用のデフォルトに使う） */
-function allCellKeysOf(a: PanelArray): string[] {
-  const keys: string[] = [];
-  for (let r = 0; r < a.rows; r++) for (let c = 0; c < a.cols; c++) keys.push(cellKey(r, c));
-  return keys;
-}
-
-/** 作業コピーの配列を「既設マスタ実体＋マーク」と「新設」に分解する。 */
-function splitWorkingArrays(arrays: PanelArray[]): {
-  existing: PanelArray[];
-  marks: Record<string, ExistingArrayMarks>;
-  newArrays: PanelArray[];
-} {
-  const existing: PanelArray[] = [];
-  const marks: Record<string, ExistingArrayMarks> = {};
-  const newArrays: PanelArray[] = [];
-  for (const a of arrays ?? []) {
-    if (a.keepCells !== undefined) {
-      // 既設：マーク（流用/撤去）を剥がした実体をマスタへ、マークは候補側へ。
-      // セルごとの型式（cellPanels＝混在の塗り分け）は「何が載っているか」という実体なのでマスタに残す
-      const body: PanelArray = { ...a };
-      delete body.keepCells;
-      delete body.removedCells;
-      existing.push(body);
-      marks[a.id] = { keepCells: a.keepCells, removedCells: a.removedCells };
-    } else {
-      newArrays.push(a);
-    }
-  }
-  return { existing, marks, newArrays };
-}
-
-/** 既設マスタに候補のマークを適用し、新設を足して作業コピー用の配列へ合成する。
- *  マークの無い既設は「全部流用」スタート（候補2で既設が新設扱いになる事故の構造的防止）。 */
-function composeWorkingArrays(
-  existing: PanelArray[],
-  marks: Record<string, ExistingArrayMarks> | undefined,
-  newArrays: PanelArray[]
-): PanelArray[] {
-  const ex = existing.map((a) => {
-    const m = marks?.[a.id];
-    return {
-      ...a,
-      keepCells: m ? m.keepCells ?? [] : allCellKeysOf(a),
-      removedCells: m?.removedCells,
-      // 型式の混在はマスタ実体が正。旧データ（候補マーク側に持っていた頃）の値はフォールバックで救う
-      cellPanels: a.cellPanels ?? m?.cellPanels,
-    };
-  });
-  return [...ex, ...newArrays];
-}
+// splitWorkingArrays / composeWorkingArrays は candidateCost.ts と共有するため
+// ./calc/layoutCompose.ts へ移設した（挙動は同一）。
 
 /** 旧データ移行：existingArrays が無い発電所は、作業コピー（アクティブ候補）から既設マスタを起こす。
  *  各候補の混在 arrays も「マーク＋新設」に分解する。 */

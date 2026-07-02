@@ -329,26 +329,30 @@ export const EMPTY_LAYOUT: LayoutProject = {
  * 未指定の項目は従来どおり自動導出値／既定値にフォールバックする。
  */
 export interface CandidateCostInputs {
-  /** 新設パネル枚数の手動上書き（パネルマスタID→枚数）。未指定の型式は図面から自動導出。 */
-  panelCountOverride?: Record<string, number>;
+  /** 新設パネル明細の手動上書き（型式ごとの枚数・単価）。未指定なら図面から自動導出。 */
+  panelLines?: { panelId?: string; label: string; w: number; count: number; unitYen: number }[];
   /** 撤去パネルのうち「処分」に回す枚数。未指定なら図面の撤去枚数を使う。 */
   removedDisposal?: number;
   /** 撤去パネルのうち「在庫」に回す枚数。 */
   removedStock?: number;
+  /** パワコンの扱い（keep=既設流用 / new=新設）。未指定なら構成の新設台数から判定。 */
+  pcsMode?: "keep" | "new";
+  /** 新設パワコンの機種（パワコンマスタ id）。 */
+  pcsId?: string;
   /** 新設パワコン台数の手動上書き。未指定なら構成から自動導出。 */
   newPcsCount?: number;
-  /** 新設パワコン単価（円/台）。 */
+  /** 新設パワコン単価（円/台）。未指定ならマスタの unitPriceYen。 */
   pcsUnitYen?: number;
   /** 撤去パワコン台数。 */
   removedPcsCount?: number;
-  /** その他費用（連系負担金・申請費・値引き・監視装置など）。候補ごと。 */
+  /** 監視装置の種別（none=なし / full=SmartLogger / lite=Lite版）。 */
+  loggerType?: "none" | "full" | "lite";
+  /** 監視装置の単価（円）。 */
+  loggerUnitYen?: number;
+  /** 変更後の年間発電量の手動上書き（kWh/年）。未指定なら容量比で概算。 */
+  afterGenOverride?: number;
+  /** その他費用（連系負担金・申請費・値引きなど）。候補ごと。 */
   extraCostLines?: ExtraCostLine[];
-  /** FIT買取単価（円/kWh）。費用対効果用。 */
-  fitYen?: number;
-  /** FIT残存年数（年）。 */
-  remainingYears?: number;
-  /** 変更後の年間発電量（kWh/年）。手入力時のみ。 */
-  afterKwh?: number;
 }
 
 /**
