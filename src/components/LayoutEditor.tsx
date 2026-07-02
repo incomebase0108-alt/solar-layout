@@ -2999,6 +2999,29 @@ img{width:100%;height:auto;border:1px solid #cbd5e1} .row{font-size:12px;margin-
       </div>
       )}
 
+      {/* スケール未校正のまま配置が始まっている場合の警告（暫定50px/mで寸法・影・離隔が不正確） */}
+      {layout.imageDataUrl && !layout.calibration && (layout.arrays.length > 0 || (layout.freePanels?.length ?? 0) > 0) && (
+        <div
+          className="card no-print"
+          style={{ display: "flex", alignItems: "center", gap: 10, borderColor: "var(--warn)", background: "rgba(245,158,11,0.10)" }}
+        >
+          <span>
+            ⚠ <strong>スケール未校正</strong>です（暫定 50px/m で表示中）。パネル寸法・影・離隔の数字が実際と合っていない可能性があります。
+          </span>
+          <span className="spacer" />
+          <button
+            className="btn small"
+            onClick={() => {
+              if (mode !== "calibrate" && !confirmSharedChange()) return;
+              switchPhase("kisetsu");
+              setMode("calibrate");
+            }}
+          >
+            基準寸法を設定する
+          </button>
+        </div>
+      )}
+
       {layout.imageDataUrl && (
         <div className="card" style={{ padding: 0, overflow: "hidden", position: "relative" }}>
           <canvas

@@ -8,7 +8,7 @@ import { PlantManager } from "./components/PlantManager";
 import { PcsComposer } from "./components/PcsComposer";
 import { CostEstimator } from "./components/CostEstimator";
 import { Guide } from "./components/Guide";
-import { StepNav } from "./components/StepNav";
+import { StepNav, EmptyState } from "./components/StepNav";
 import { CandidateBar } from "./components/CandidateBar";
 import { usePanels, usePcsList, useConditions, usePlants, useCostRates } from "./store";
 
@@ -184,6 +184,10 @@ export default function App() {
           updatePlant={plantStore.updatePlant}
           goToTab={(t) => setTab(t as Tab)}
         />
+      )}
+      {/* 発電所が未選択のとき②〜④が真っ白にならないよう空状態を表示（迷子防止の安全網） */}
+      {(tab === "layout" || tab === "pcsunits" || tab === "cost") && !current && (
+        <EmptyState goPlant={() => setTab("plant")} />
       )}
       {tab === "panel" && <PanelRegistry store={panelStore} plants={plantStore.plants} />}
       {tab === "pcs" && <PcsRegistry store={pcsStore} plants={plantStore.plants} />}

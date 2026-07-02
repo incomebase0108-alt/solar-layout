@@ -3,6 +3,7 @@ import type { PanelSpec, PcsSpec, PowerPlant, CostRates, ExtraCostLine, Candidat
 import { estimateCost, estimateAfterGeneration, estimateRoi, type NewPanelLine } from "../calc/cost";
 import { arrayCellStats } from "../calc/layoutCount";
 import { missingPcsPrices } from "../calc/candidateCost";
+import { numOr } from "../utils/num";
 import { uid } from "../store";
 
 interface Props {
@@ -180,7 +181,7 @@ export function CostEstimator({ plant, panels, pcsList, costRates, setCostRates,
   const removedDiff = removedTotal !== derived.removedExisting;
 
   const setRate = (k: keyof CostRates) => (e: React.ChangeEvent<HTMLInputElement>) =>
-    setCostRates({ ...costRates, [k]: Number(e.target.value) });
+    setCostRates({ ...costRates, [k]: numOr(e.target.value) });
   const updateLine = (id: string, patch: Partial<EditLine>) =>
     persistLines(lines.map((l) => (l.id === id ? { ...l, ...patch } : l)));
   const removeLine = (id: string) => persistLines(lines.filter((l) => l.id !== id));

@@ -39,6 +39,20 @@ export function nextStep(current: PowerPlant | null): { tab: string; text: strin
 }
 
 /**
+ * 発電所が未選択（データ破損等）のとき、②〜④タブが真っ白にならないための空状態表示。
+ * 通常は発電所が自動で用意されるため出番は少ないが、迷子防止の安全網として置く。
+ */
+export function EmptyState({ goPlant }: { goPlant: () => void }) {
+  return (
+    <div className="card" style={{ textAlign: "center", padding: 32 }}>
+      <div style={{ fontSize: 28 }}>☀</div>
+      <p>対象の発電所が選ばれていません。まず「①発電所」で発電所を追加・選択してください。</p>
+      <button className="btn" onClick={goPlant}>① 発電所タブへ →</button>
+    </div>
+  );
+}
+
+/**
  * 作業フロー順タブ＋マスタ群＋「次にやること」案内バナー。
  * バナーは案内先のタブを開いている間は消える（邪魔にならないように）。
  */

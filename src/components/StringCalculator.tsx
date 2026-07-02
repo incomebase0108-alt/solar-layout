@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import type { PanelSpec, PcsSpec, DesignConditions } from "../types";
 import { calcStringSizing, calcArrayCapacity } from "../calc/stringSizing";
+import { numOr } from "../utils/num";
 
 interface Props {
   panels: PanelSpec[];
@@ -85,7 +86,7 @@ export function StringCalculator({
               type="number"
               value={conditions.minAmbientTempC}
               onChange={(e) =>
-                setConditions({ ...conditions, minAmbientTempC: Number(e.target.value) })
+                setConditions({ ...conditions, minAmbientTempC: numOr(e.target.value, conditions.minAmbientTempC) })
               }
             />
             <div className="hint">既定 −3℃（西尾市基準）。低いほど低温Vocが上がり直列上限が下がる（過電圧に安全側）。寒冷地は下げる。</div>
@@ -96,7 +97,7 @@ export function StringCalculator({
               type="number"
               value={conditions.maxCellTempC}
               onChange={(e) =>
-                setConditions({ ...conditions, maxCellTempC: Number(e.target.value) })
+                setConditions({ ...conditions, maxCellTempC: numOr(e.target.value, conditions.maxCellTempC) })
               }
             />
           </div>
